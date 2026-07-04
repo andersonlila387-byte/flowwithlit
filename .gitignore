@@ -1,0 +1,28 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Build outputs
+*.exe
+*.dll
+*.so
+*.dylib
+/api.exe
+/cmd/api/api.exe
+/bin/
+/dist/
+
+# Go
+/vendor/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
