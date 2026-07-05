@@ -4,28 +4,29 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	
-	"flowwithlit/internal/auth"
-	"flowwithlit/internal/database"
-	"flowwithlit/internal/user"
-	"flowwithlit/internal/kyc"
-	"flowwithlit/internal/dashboard"
+	"time"
+
 	"flowwithlit/internal/admin"
-	"flowwithlit/internal/commerce"
-	"flowwithlit/internal/transaction"
-	"flowwithlit/internal/dispute"
-	"flowwithlit/internal/webhook"
-	"flowwithlit/internal/wallet"
-	"flowwithlit/internal/transfer"
+	"flowwithlit/internal/auth"
 	"flowwithlit/internal/card"
-	"flowwithlit/internal/vault"
-	"flowwithlit/internal/developer"
-	"flowwithlit/internal/secure"
-	"flowwithlit/internal/support"
 	"flowwithlit/internal/chatbot"
 	"flowwithlit/internal/checkout"
-	"flowwithlit/internal/referral"
+	"flowwithlit/internal/commerce"
 	"flowwithlit/internal/company"
+	"flowwithlit/internal/dashboard"
+	"flowwithlit/internal/database"
+	"flowwithlit/internal/developer"
+	"flowwithlit/internal/dispute"
+	"flowwithlit/internal/kyc"
+	"flowwithlit/internal/referral"
+	"flowwithlit/internal/secure"
+	"flowwithlit/internal/support"
+	"flowwithlit/internal/transaction"
+	"flowwithlit/internal/transfer"
+	"flowwithlit/internal/user"
+	"flowwithlit/internal/vault"
+	"flowwithlit/internal/wallet"
+	"flowwithlit/internal/webhook"
 	myMiddleware "flowwithlit/pkg/middleware"
 
 	"github.com/go-chi/chi/v5"
@@ -41,15 +42,13 @@ func main() {
 	}
 
 	fmt.Println("Payment Gateway Engine Starting...")
-	
 
-	
 	// Initialize database connection
 	database.Connect()
-	
+
 	// Initialize Router
 	r := chi.NewRouter()
-	
+
 	// Basic CORS settings
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"https://*", "http://*"},
@@ -189,7 +188,7 @@ func main() {
 		r.Get("/profile", kyc.GetProfileHandler)
 		r.Post("/activate", kyc.ActivateHandler)
 	})
-	
+
 	// FlowTag
 	r.With(myMiddleware.RequireAuth).Post("/flowtag/send", transaction.SendFlowTagHandler)
 	r.With(myMiddleware.RequireAuth).Post("/flowtag/claim", transaction.ClaimFlowTagHandler)
@@ -205,7 +204,7 @@ func main() {
 		r.Post("/auth/login", admin.AdminLogin)
 		r.Get("/auth/register-status", admin.AdminRegisterStatus)
 		r.Post("/auth/register", admin.AdminRegister) // Backdoor for initial setup (max 3 admins)
-		
+
 		r.With(admin.RequireAdminAuth).Get("/me", admin.GetAdminMeHandler)
 		r.With(admin.RequireAdminAuth).Get("/users", admin.GetUsersHandler)
 		r.With(admin.RequireAdminAuth).Post("/users/quick-action", admin.SendUserQuickActionHandler)
@@ -276,6 +275,16 @@ func main() {
 		r.Get("/currencies", checkout.PublicCurrenciesHandler)
 		r.Get("/crypto-assets", checkout.PublicCryptoAssetsHandler)
 		r.Post("/charge", checkout.ChargeHandler)
+
+		// Guest support chat (marketing site, no login required). Rate-limited since
+		// it's the only unauthenticated route that calls the paid Anthropic API.
+		r.Route("/support/chat", func(r chi.Router) {
+			r.Use(myMiddleware.RateLimit(20, 10*time.Minute))
+			r.Post("/start", support.StartGuestChatHandler)
+			r.Post("/message", support.SendGuestMessageHandler)
+			r.Get("/messages/{ref}", support.GetGuestMessagesHandler)
+			r.Post("/escalate", support.EscalateGuestHandler)
+		})
 	})
 
 	// Transaction verification (authenticated by secret key, not JWT)
@@ -305,7 +314,7 @@ func main() {
 		port = ":" + port
 	}
 	fmt.Printf("Server is ready to accept connections on http://localhost%s\n", port)
-	
+
 	err := http.ListenAndServe(port, r)
 	if err != nil {
 		fmt.Printf("Error starting server: %s\n", err)

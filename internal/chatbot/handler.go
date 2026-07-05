@@ -1,83 +1,20 @@
 package chatbot
 
 import (
-	"bytes"
 	"encoding/json"
 	"flowwithlit/internal/database"
 	"flowwithlit/internal/models"
-	"fmt"
 	"net/http"
-	"os"
 	"strings"
-	"time"
 )
 
-const claudeModel = "claude-haiku-4-5-20251001"
 const maxHistory = 20
 
-// ── Anthropic API types ──────────────────────────────────────────────────────
-
-type anthropicMsg struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type anthropicReq struct {
-	Model     string         `json:"model"`
-	MaxTokens int            `json:"max_tokens"`
-	System    string         `json:"system"`
-	Messages  []anthropicMsg `json:"messages"`
-}
-
-type anthropicResp struct {
-	Content []struct {
-		Text string `json:"text"`
-	} `json:"content"`
-}
-
-// BotReply is the structured response Claude always returns
+// BotReply is the structured response the model always returns
 type BotReply struct {
 	Reply         string `json:"reply"`
 	Escalate      bool   `json:"escalate"`
 	SuggestTicket bool   `json:"suggest_ticket"`
-}
-
-// ── Core Claude caller ────────────────────────────────────────────────────────
-
-func callClaude(systemPrompt string, messages []anthropicMsg) (string, error) {
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey == "" {
-		return "", fmt.Errorf("ANTHROPIC_API_KEY not set")
-	}
-
-	body, _ := json.Marshal(anthropicReq{
-		Model:     claudeModel,
-		MaxTokens: 1024,
-		System:    systemPrompt,
-		Messages:  messages,
-	})
-
-	req, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewBuffer(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("x-api-key", apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-	req.Header.Set("content-type", "application/json")
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	var ar anthropicResp
-	json.NewDecoder(resp.Body).Decode(&ar)
-	if len(ar.Content) == 0 {
-		return "", fmt.Errorf("empty response from Claude")
-	}
-	return ar.Content[0].Text, nil
 }
 
 // ── GenerateResponse — called by the support handler when user sends a message ──
@@ -92,18 +29,18 @@ func GenerateResponse(sessionRef string, userMessage string, userContext string)
 	var history []models.ChatMessage
 	database.DB.Where("session_id = ?", session.ID).Order("created_at asc").Limit(maxHistory).Find(&history)
 
-	msgs := []anthropicMsg{}
+	msgs := []llmMsg{}
 	for _, m := range history {
 		role := "user"
 		if m.Sender == "bot" || m.Sender == "agent" {
 			role = "assistant"
 		}
-		msgs = append(msgs, anthropicMsg{Role: role, Content: m.Content})
+		msgs = append(msgs, llmMsg{Role: role, Content: m.Content})
 	}
-	msgs = append(msgs, anthropicMsg{Role: "user", Content: userMessage})
+	msgs = append(msgs, llmMsg{Role: "user", Content: userMessage})
 
-	systemPrompt := buildSystemPrompt(userContext)
-	rawReply, err := callClaude(systemPrompt, msgs)
+	systemPrompt := buildSystemPrompt(userContext, retrieveKBContext(userMessage))
+	rawReply, err := callLLM(systemPrompt, msgs)
 	if err != nil {
 		return BotReply{
 			Reply:    "I'm having trouble right now. Let me connect you to a live agent.",
@@ -150,13 +87,16 @@ func SuggestReplyHandler(w http.ResponseWriter, r *http.Request) {
 	var history []models.ChatMessage
 	database.DB.Where("session_id = ?", session.ID).Order("created_at asc").Limit(maxHistory).Find(&history)
 
-	msgs := []anthropicMsg{}
+	msgs := []llmMsg{}
+	var lastUserMessage string
 	for _, m := range history {
 		role := "user"
 		if m.Sender == "bot" || m.Sender == "agent" {
 			role = "assistant"
+		} else {
+			lastUserMessage = m.Content
 		}
-		msgs = append(msgs, anthropicMsg{Role: role, Content: m.Content})
+		msgs = append(msgs, llmMsg{Role: role, Content: m.Content})
 	}
 
 	agentPrompt := `You are helping a Flowwithlit support agent draft a reply to a customer.
@@ -164,9 +104,16 @@ Read the conversation history and write a professional, helpful response.
 Be concise (2-4 sentences max).
 If code or steps are needed, include them clearly.
 Do NOT use JSON format — just write the reply text directly.
-Focus entirely on solving the customer's specific issue.`
+Focus entirely on solving the customer's specific issue.
+If a "RELEVANT DOCUMENTATION" block is provided below, ground your draft in it and end the draft
+with a line like "(Source: flowwithlit_kb.md, line N)" citing where you found it — this is for the
+agent's own verification, not for the customer.`
 
-	draft, err := callClaude(agentPrompt, msgs)
+	if kb := retrieveKBContext(lastUserMessage); kb != "" {
+		agentPrompt += "\n\n" + kb
+	}
+
+	draft, err := callLLM(agentPrompt, msgs)
 	if err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		json.NewEncoder(w).Encode(map[string]interface{}{"status": false, "message": "AI temporarily unavailable"})
@@ -181,10 +128,13 @@ Focus entirely on solving the customer's specific issue.`
 
 // ── System prompt builder ─────────────────────────────────────────────────────
 
-func buildSystemPrompt(userContext string) string {
+func buildSystemPrompt(userContext string, kbContext string) string {
 	prompt := systemPromptBase
 	if userContext != "" {
 		prompt += "\n\nCURRENT USER:\n" + userContext
+	}
+	if kbContext != "" {
+		prompt += "\n\n" + kbContext
 	}
 	return prompt
 }
