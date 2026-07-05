@@ -46,6 +46,10 @@ func phpMailURL() string {
 		}
 		return u + "/mail/dispatch.php"
 	}
+	// Production default when Go runs on Render/Railway and PHP mail lives on Hostinger.
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("ENVIRONMENT")), "production") {
+		return "https://flowwithlit.com/mail/dispatch.php"
+	}
 	return "http://localhost/flowwithlit/mail/dispatch.php"
 }
 

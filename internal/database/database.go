@@ -26,29 +26,39 @@ func Connect() {
 	if dbPort == "" { dbPort = "3306" }
 	if dbName == "" { dbName = "flowwithlit_db" }
 
+	// Optional TLS for remote MySQL providers that require/prefer an encrypted
+	// connection. Off by default to stay compatible with local dev and hosts
+	// (like Hostinger) that don't need it. Set DB_TLS=true / skip-verify / preferred.
+	tlsParam := ""
+	if dbTLS := os.Getenv("DB_TLS"); dbTLS != "" {
+		tlsParam = "&tls=" + dbTLS
+	}
+
 	// Format: user:pass@tcp(host:port)/?charset=utf8mb4&parseTime=True&loc=Local
-	serverDSN := fmt.Sprintf("%s:%s@tcp(%s:%s)/?charset=utf8mb4&parseTime=True&loc=Local", dbUser, dbPass, dbHost, dbPort)
-	
+	serverDSN := fmt.Sprintf("%s:%s@tcp(%s:%s)/?charset=utf8mb4&parseTime=True&loc=Local%s", dbUser, dbPass, dbHost, dbPort, tlsParam)
+
 	tempDB, err := gorm.Open(mysql.Open(serverDSN), &gorm.Config{})
 	if err != nil {
 		log.Fatalf("Failed to connect to MySQL server: %v", err)
 	}
 
-	// Create the flowwithlit_db database if it doesn't already exist
-	err = tempDB.Exec("CREATE DATABASE IF NOT EXISTS flowwithlit_db").Error
-	if err != nil {
-		log.Fatalf("Failed to create database: %v", err)
+	// Create the target database if it doesn't already exist. Many managed/shared
+	// MySQL hosts (e.g. Hostinger) scope the app's DB user to a pre-provisioned
+	// database and don't grant CREATE DATABASE — so this is best-effort and must
+	// not crash the app when it's denied; we just proceed to connect directly.
+	if err := tempDB.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s`", dbName)).Error; err != nil {
+		log.Printf("⚠️  Could not create database %q (likely lacks CREATE privilege on a remote/managed host) — assuming it already exists: %v", dbName, err)
 	}
 
 	// Now connect directly to the target database
-	dbDSN := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local", dbUser, dbPass, dbHost, dbPort, dbName)
+	dbDSN := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local%s", dbUser, dbPass, dbHost, dbPort, dbName, tlsParam)
 	db, err := gorm.Open(mysql.Open(dbDSN), &gorm.Config{})
 	if err != nil {
-		log.Fatalf("Failed to connect to flowwithlit_db: %v", err)
+		log.Fatalf("Failed to connect to %s: %v", dbName, err)
 	}
 
 	DB = db
-	log.Println("🚀 Successfully connected to MySQL Database (flowwithlit_db)!")
+	log.Printf("🚀 Successfully connected to MySQL Database (%s)!", dbName)
 
 	// Auto-Migrate Models
 	err = DB.AutoMigrate(

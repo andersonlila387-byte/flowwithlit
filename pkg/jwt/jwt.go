@@ -2,13 +2,21 @@ package jwt
 
 import (
 	"errors"
+	"os"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// In a real production app, this should be loaded from an environment variable!
-var secretKey = []byte("super-secret-flowwithlit-key")
+// secretKey signs all user auth tokens. Must be set via JWT_SECRET in production —
+// the fallback below is dev-only and must never be used once deployed, since anyone
+// with the source code could otherwise forge valid tokens for any user.
+var secretKey = func() []byte {
+	if s := os.Getenv("JWT_SECRET"); s != "" {
+		return []byte(s)
+	}
+	return []byte("super-secret-flowwithlit-key")
+}()
 
 // GenerateTokens creates both an access token (24h) and a refresh token (7 days)
 func GenerateTokens(userID uint, email string) (string, string, error) {
