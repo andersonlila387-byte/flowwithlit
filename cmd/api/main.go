@@ -18,6 +18,7 @@ import (
 	"flowwithlit/internal/developer"
 	"flowwithlit/internal/dispute"
 	"flowwithlit/internal/kyc"
+	"flowwithlit/internal/payroll"
 	"flowwithlit/internal/referral"
 	"flowwithlit/internal/secure"
 	"flowwithlit/internal/support"
@@ -141,6 +142,14 @@ func main() {
 		r.Post("/transfers/lookup", transfer.LookupAccountHandler)
 		r.Post("/transfers/bulk", transfer.BulkTransferHandler)
 		r.Get("/transfers", transfer.GetTransfersHandler)
+
+		// Payroll roster (Phase 2 — CRUD only, no settings/scheduler yet)
+		r.Route("/payroll/employees", func(r chi.Router) {
+			r.Get("/", payroll.GetEmployeesHandler)
+			r.Post("/", payroll.CreateEmployeeHandler)
+			r.Put("/{id}", payroll.UpdateEmployeeHandler)
+			r.Delete("/{id}", payroll.DeleteEmployeeHandler)
+		})
 
 		// Virtual Cards (Phase 3)
 		r.Get("/cards", card.GetCardsHandler)
