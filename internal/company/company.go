@@ -12,44 +12,48 @@ const SettingKey = "company_info"
 
 // Info is the single source of truth for Flowwithlit company contact details.
 type Info struct {
-	CompanyName     string `json:"company_name"`
-	LegalName       string `json:"legal_name"`
-	Tagline         string `json:"tagline"`
-	AddressLine1    string `json:"address_line1"`
-	AddressLine2    string `json:"address_line2"`
-	City            string `json:"city"`
-	StateRegion     string `json:"state_region"`
-	Country         string `json:"country"`
-	PostalCode      string `json:"postal_code"`
-	SupportEmail    string `json:"support_email"`
-	SalesEmail      string `json:"sales_email"`
-	Phone           string `json:"phone"`
-	PhoneDisplay    string `json:"phone_display"`
-	SocialTwitter   string `json:"social_twitter"`
-	SocialGithub    string `json:"social_github"`
-	SocialLinkedin  string `json:"social_linkedin"`
-	SocialFacebook  string `json:"social_facebook"`
-	SocialInstagram string `json:"social_instagram"`
-	CopyrightName   string `json:"copyright_name"`
+	CompanyName          string `json:"company_name"`
+	LegalName            string `json:"legal_name"`
+	Tagline              string `json:"tagline"`
+	AddressLine1         string `json:"address_line1"`
+	AddressLine2         string `json:"address_line2"`
+	City                 string `json:"city"`
+	StateRegion          string `json:"state_region"`
+	Country              string `json:"country"`
+	PostalCode           string `json:"postal_code"`
+	SupportEmail         string `json:"support_email"`
+	SalesEmail           string `json:"sales_email"`
+	Phone                string `json:"phone"`
+	PhoneDisplay         string `json:"phone_display"`
+	SocialTwitter        string `json:"social_twitter"`
+	SocialGithub         string `json:"social_github"`
+	SocialLinkedin       string `json:"social_linkedin"`
+	SocialFacebook       string `json:"social_facebook"`
+	SocialInstagram      string `json:"social_instagram"`
+	CopyrightName        string `json:"copyright_name"`
+	RegistrationNumber   string `json:"registration_number"`
+	RegulatoryDisclosure string `json:"regulatory_disclosure"`
 }
 
 // Defaults returns the platform default company profile.
 func Defaults() Info {
 	return Info{
-		CompanyName:   "Flowwithlit",
-		LegalName:     "Flowwithlit Inc.",
-		Tagline:       "Unified Payments, Banking & Crypto",
-		AddressLine1:  "123 Financial Way",
-		AddressLine2:  "Innovation District",
-		City:          "Lagos",
-		StateRegion:   "Lagos State",
-		Country:       "Nigeria",
-		PostalCode:    "",
-		SupportEmail:  "support@flowwithlit.com",
-		SalesEmail:    "sales@flowwithlit.com",
-		Phone:         "+1234567890",
-		PhoneDisplay:  "+1 (234) 567-890",
-		CopyrightName: "Flowwithlit Payments",
+		CompanyName:          "Flowwithlit",
+		LegalName:            "Flowwithlit Inc.",
+		Tagline:              "Unified Payments, Banking & Crypto",
+		AddressLine1:         "123 Financial Way",
+		AddressLine2:         "Innovation District",
+		City:                 "Lagos",
+		StateRegion:          "Lagos State",
+		Country:              "Nigeria",
+		PostalCode:           "",
+		SupportEmail:         "support@flowwithlit.com",
+		SalesEmail:           "sales@flowwithlit.com",
+		Phone:                "+1234567890",
+		PhoneDisplay:         "+1 (234) 567-890",
+		CopyrightName:        "Flowwithlit Payments",
+		RegistrationNumber:   "RC-000000",
+		RegulatoryDisclosure: "Flowwithlit is not a bank. Payment and banking features are provided in partnership with [LICENSED PARTNER NAME], licensed by [REGULATOR NAME].",
 	}
 }
 
@@ -124,6 +128,12 @@ func MergeWithDefaults(info Info) Info {
 	if strings.TrimSpace(info.CopyrightName) == "" {
 		info.CopyrightName = def.CopyrightName
 	}
+	if strings.TrimSpace(info.RegistrationNumber) == "" {
+		info.RegistrationNumber = def.RegistrationNumber
+	}
+	if strings.TrimSpace(info.RegulatoryDisclosure) == "" {
+		info.RegulatoryDisclosure = def.RegulatoryDisclosure
+	}
 	return info
 }
 
@@ -163,19 +173,21 @@ func (i Info) FormattedAddress() string {
 // TemplateVars returns flat placeholders for HTML email templates.
 func (i Info) TemplateVars() map[string]string {
 	return map[string]string{
-		"company_name":        i.CompanyName,
-		"company_legal_name":  i.LegalName,
-		"company_tagline":     i.Tagline,
-		"company_address":     i.FormattedAddress(),
-		"support_email":       i.SupportEmail,
-		"sales_email":         i.SalesEmail,
-		"company_phone":       i.PhoneDisplay,
-		"company_phone_tel":   i.Phone,
-		"copyright_name":      i.CopyrightName,
-		"social_twitter":      i.SocialTwitter,
-		"social_github":       i.SocialGithub,
-		"social_linkedin":     i.SocialLinkedin,
-		"social_facebook":     i.SocialFacebook,
-		"social_instagram":    i.SocialInstagram,
+		"company_name":          i.CompanyName,
+		"company_legal_name":    i.LegalName,
+		"company_tagline":       i.Tagline,
+		"company_address":       i.FormattedAddress(),
+		"support_email":         i.SupportEmail,
+		"sales_email":           i.SalesEmail,
+		"company_phone":         i.PhoneDisplay,
+		"company_phone_tel":     i.Phone,
+		"copyright_name":        i.CopyrightName,
+		"registration_number":   i.RegistrationNumber,
+		"regulatory_disclosure": i.RegulatoryDisclosure,
+		"social_twitter":        i.SocialTwitter,
+		"social_github":         i.SocialGithub,
+		"social_linkedin":       i.SocialLinkedin,
+		"social_facebook":       i.SocialFacebook,
+		"social_instagram":      i.SocialInstagram,
 	}
 }
