@@ -96,6 +96,10 @@ func Connect() {
 		&models.RateChangeLog{},
 		&models.FlowTagPaymentRequest{},
 		&models.Referral{},
+		&models.PayrollEmployee{},
+		&models.PayrollSettings{},
+		&models.PayrollRun{},
+		&models.PayrollRunItem{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to auto-migrate database: %v", err)
