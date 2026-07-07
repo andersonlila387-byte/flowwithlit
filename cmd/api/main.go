@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"flowwithlit/internal/admin"
@@ -51,8 +52,19 @@ func main() {
 	r := chi.NewRouter()
 
 	// Basic CORS settings
+	// flowwithlitExtensionOrigin is the browser extension's fixed origin, derived from the
+	// public key pinned in extension/manifest.json — chrome-extension:// origins don't match
+	// the http/https wildcard patterns below, so it needs an explicit AllowOriginFunc check.
+	// go-chi/cors ignores AllowedOrigins entirely once AllowOriginFunc is set, so the
+	// http/https wildcard behavior that used to live in AllowedOrigins is reproduced below.
+	const flowwithlitExtensionOrigin = "chrome-extension://oobmbnjnkfllnaonmhdkpladmacbnaih"
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"https://*", "http://*"},
+		AllowOriginFunc: func(r *http.Request, origin string) bool {
+			if origin == flowwithlitExtensionOrigin {
+				return true
+			}
+			return strings.HasPrefix(origin, "https://") || strings.HasPrefix(origin, "http://")
+		},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
 		ExposedHeaders:   []string{"Link"},
@@ -90,7 +102,7 @@ func main() {
 		r.Put("/password", user.UpdatePasswordHandler)
 		r.Put("/profile-image", user.UpdateProfileImageHandler)
 		r.Post("/pin/setup", user.SetupPINHandler)
-		r.Post("/pin/verify", user.VerifyPINHandler)
+		r.With(myMiddleware.RateLimit(5, 1*time.Minute)).Post("/pin/verify", user.VerifyPINHandler)
 		r.Get("/2fa/generate", user.Generate2FAHandler)
 		r.Post("/2fa/verify", user.Verify2FAHandler)
 		r.Post("/2fa/disable", user.Disable2FAHandler)
@@ -135,12 +147,17 @@ func main() {
 
 		// Funding / Deposit details (OnePipe + Circle)
 		r.Get("/funding/deposit-details", wallet.GetDepositDetailsHandler)
+		r.Get("/funding/deposit-accounts", wallet.GetDepositAccountsHandler)
+		r.Post("/funding/deposit-accounts", wallet.CreateDepositAccountHandler)
+		r.Get("/funding/crypto-addresses", wallet.GetCryptoAddressesHandler)
+		r.Post("/funding/crypto-addresses", wallet.CreateCryptoAddressHandler)
+		r.With(myMiddleware.RateLimit(5, 1*time.Minute)).Post("/funding/crypto-withdraw", wallet.WithdrawCryptoHandler)
 
 		// Transfers (bank + history)
 		r.Get("/transfers/banks", transfer.BanksHandler)
-		r.Post("/transfers/bank", transfer.CreateBankTransferHandler)
+		r.With(myMiddleware.RateLimit(5, 1*time.Minute)).Post("/transfers/bank", transfer.CreateBankTransferHandler)
 		r.Post("/transfers/lookup", transfer.LookupAccountHandler)
-		r.Post("/transfers/bulk", transfer.BulkTransferHandler)
+		r.With(myMiddleware.RateLimit(5, 1*time.Minute)).Post("/transfers/bulk", transfer.BulkTransferHandler)
 		r.Get("/transfers", transfer.GetTransfersHandler)
 
 		// Payroll roster (Phase 2 — CRUD only, no settings/scheduler yet)
@@ -156,7 +173,7 @@ func main() {
 		r.Post("/cards", card.CreateCardHandler)
 		r.Post("/cards/{id}/fund", card.FundCardHandler)
 		r.Post("/cards/{id}/freeze", card.FreezeCardHandler)
-		r.Get("/cards/{id}/reveal", card.RevealCardHandler)
+		r.With(myMiddleware.RateLimit(5, 1*time.Minute)).Get("/cards/{id}/reveal", card.RevealCardHandler)
 
 		// Vaults (Phase 3)
 		r.Get("/vaults", vault.GetVaultsHandler)

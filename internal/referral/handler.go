@@ -30,9 +30,9 @@ func MeHandler(w http.ResponseWriter, r *http.Request) {
 		base = strings.TrimRight(os.Getenv("FRONTEND_URL"), "/")
 	}
 	if base == "" {
-		base = "http://localhost/flowwithlit/auth"
+		base = "https://auth.flowwithlit.com"
 	}
-	link := base + "/signup.php?ref=" + code
+	link := base + "/signup?ref=" + code
 
 	var invited, paid int64
 	database.DB.Model(&models.Referral{}).Where("referrer_id = ?", userID).Count(&invited)
@@ -45,15 +45,15 @@ func MeHandler(w http.ResponseWriter, r *http.Request) {
 		Scan(&totalEarned)
 
 	response.Success(w, http.StatusOK, map[string]interface{}{
-		"enabled":          cfg.Enabled,
-		"referral_code":    code,
-		"referral_link":    link,
-		"reward_amount":    cfg.RewardAmount,
-		"reward_currency":  cfg.RewardCurrency,
-		"min_qualifying":   cfg.MinQualifyingAmount,
-		"invited_count":    invited,
-		"paid_count":       paid,
-		"total_earned":     totalEarned,
+		"enabled":         cfg.Enabled,
+		"referral_code":   code,
+		"referral_link":   link,
+		"reward_amount":   cfg.RewardAmount,
+		"reward_currency": cfg.RewardCurrency,
+		"min_qualifying":  cfg.MinQualifyingAmount,
+		"invited_count":   invited,
+		"paid_count":      paid,
+		"total_earned":    totalEarned,
 	})
 }
 

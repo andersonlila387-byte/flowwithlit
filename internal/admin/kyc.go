@@ -2,6 +2,7 @@ package admin
 
 import (
 	"encoding/json"
+	"log"
 	"math"
 	"net/http"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 
 	"flowwithlit/internal/database"
 	"flowwithlit/internal/models"
+	"flowwithlit/internal/wallet"
 	"flowwithlit/pkg/email"
 	"flowwithlit/pkg/response"
 )
@@ -145,6 +147,16 @@ func ApproveKYCHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Upgrade user to Tier 2
 	database.DB.Model(&user).Update("kyc_level", 2)
+
+	// Every KYC-approved user gets a default deposit account (own name) and a
+	// default USDT receiving address the moment they're approved — not lazily
+	// created on first page visit.
+	if _, err := wallet.EnsureDefaultDepositAccount(user.ID); err != nil {
+		log.Printf("KYC approval: could not create default deposit account for user %d: %v", user.ID, err)
+	}
+	if _, err := wallet.EnsureDefaultCryptoAddress(user.ID); err != nil {
+		log.Printf("KYC approval: could not create default crypto address for user %d: %v", user.ID, err)
+	}
 
 	// In-app notification
 	database.DB.Create(&models.Notification{

@@ -118,9 +118,9 @@ func SendFlowTagHandler(w http.ResponseWriter, r *http.Request) {
 		database.DB.Create(&flowTag)
 
 		response.Success(w, http.StatusOK, map[string]interface{}{
-			"message":      fmt.Sprintf("Sent instantly to @%s", recipientUser.FlowTagUsername),
-			"reference":    flowRef,
-			"instant":      true,
+			"message":       fmt.Sprintf("Sent instantly to @%s", recipientUser.FlowTagUsername),
+			"reference":     flowRef,
+			"instant":       true,
 			"recipient_tag": recipientUser.FlowTagUsername,
 		})
 		return
@@ -207,7 +207,7 @@ func SendFlowTagHandler(w http.ResponseWriter, r *http.Request) {
 		senderEmail = sender.Email
 	}
 
-	claimURL := fmt.Sprintf("%s/claim.php?token=%s", getBaseURL(), token)
+	claimURL := fmt.Sprintf("%s/claim?token=%s", getBaseURL(), token)
 	expiresIn := "24 hours"
 
 	_ = email.SendFlowTagReceived(
@@ -227,12 +227,12 @@ func SendFlowTagHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// getBaseURL returns the frontend base for links (configurable via env)
+// getBaseURL returns the app frontend base for links (configurable via env)
 func getBaseURL() string {
 	if u := os.Getenv("FRONTEND_URL"); u != "" {
-		return u
+		return strings.TrimRight(u, "/")
 	}
-	return "http://localhost:8080" // default for dev (adjust for prod)
+	return "https://app.flowwithlit.com"
 }
 
 func ClaimFlowTagHandler(w http.ResponseWriter, r *http.Request) {
@@ -387,21 +387,21 @@ func LookupRecipientHandler(w http.ResponseWriter, r *http.Request) {
 			msg = "FlowTag not found. Try another @tag or use an email address."
 		}
 		response.Success(w, http.StatusOK, map[string]interface{}{
-			"found":   false,
-			"email":   display,
-			"query":   query,
+			"found":    false,
+			"email":    display,
+			"query":    query,
 			"is_email": isEmail,
-			"message": msg,
+			"message":  msg,
 		})
 		return
 	}
 
 	response.Success(w, http.StatusOK, map[string]interface{}{
-		"found":           true,
-		"first_name":      user.FirstName,
-		"last_name":       user.LastName,
-		"email":           user.Email,
+		"found":            true,
+		"first_name":       user.FirstName,
+		"last_name":        user.LastName,
+		"email":            user.Email,
 		"flowtag_username": user.FlowTagUsername,
-		"display":         "@" + user.FlowTagUsername,
+		"display":          "@" + user.FlowTagUsername,
 	})
 }

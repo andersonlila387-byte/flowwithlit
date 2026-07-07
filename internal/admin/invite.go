@@ -64,9 +64,9 @@ func SendInviteHandler(w http.ResponseWriter, r *http.Request) {
 
 	baseURL := os.Getenv("ADMIN_BASE_URL")
 	if baseURL == "" {
-		baseURL = "http://localhost/flowwithlit/admin"
+		baseURL = "https://admin.flowwithlit.com"
 	}
-	inviteLink := fmt.Sprintf("%s/accept-invite.php?token=%s", baseURL, token)
+	inviteLink := fmt.Sprintf("%s/accept-invite?token=%s", baseURL, token)
 
 	if err := emailPkg.SendAdminInvite(req.Email, req.Role, inviteLink); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)

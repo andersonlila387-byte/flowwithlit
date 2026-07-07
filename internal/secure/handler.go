@@ -28,7 +28,7 @@ func frontendBaseURL() string {
 	if u := os.Getenv("FRONTEND_URL"); u != "" {
 		return strings.TrimRight(u, "/")
 	}
-	return "http://localhost/flowwithlit/app"
+	return "https://app.flowwithlit.com"
 }
 
 func normalizeEmail(email string) string {
@@ -146,7 +146,7 @@ func CreateSecureTransferHandler(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	claimPageURL := frontendBaseURL() + "/claim-transfer.php"
+	claimPageURL := frontendBaseURL() + "/claim-transfer"
 	expiresIn := "72 hours"
 
 	_ = email.SendSecureTransferReceived(

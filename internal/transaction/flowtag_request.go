@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"flowwithlit/internal/database"
@@ -100,7 +101,7 @@ func RequestFlowTagPaymentHandler(w http.ResponseWriter, r *http.Request) {
 	if requesterName == " " {
 		requesterName = requester.Email
 	}
-	payURL := fmt.Sprintf("%s/app/flowtags.php?pay_token=%s", getAppBaseURL(), token)
+	payURL := fmt.Sprintf("%s/flowtags?pay_token=%s", getAppBaseURL(), token)
 
 	_ = email.SendFlowTagReceived(
 		req.PayerEmail,
@@ -113,10 +114,10 @@ func RequestFlowTagPaymentHandler(w http.ResponseWriter, r *http.Request) {
 	)
 
 	response.Success(w, http.StatusOK, map[string]interface{}{
-		"message":   "Payment request sent successfully",
-		"reference": payReq.Reference,
-		"pay_token": payReq.PayToken,
-		"pay_url":   payURL,
+		"message":    "Payment request sent successfully",
+		"reference":  payReq.Reference,
+		"pay_token":  payReq.PayToken,
+		"pay_url":    payURL,
 		"expires_at": payReq.ExpiresAt,
 	})
 }
@@ -153,8 +154,8 @@ func PayFlowTagRequestHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		PayToken string `json:"pay_token"`
-		RequestID uint  `json:"request_id"`
+		PayToken  string `json:"pay_token"`
+		RequestID uint   `json:"request_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.Error(w, http.StatusBadRequest, "Invalid request body")
@@ -278,7 +279,7 @@ func DeclineFlowTagRequestHandler(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		RequestID uint   `json:"request_id"`
-		PayToken    string `json:"pay_token"`
+		PayToken  string `json:"pay_token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.Error(w, http.StatusBadRequest, "Invalid request body")
@@ -318,7 +319,7 @@ func DeclineFlowTagRequestHandler(w http.ResponseWriter, r *http.Request) {
 
 func getAppBaseURL() string {
 	if u := os.Getenv("FRONTEND_URL"); u != "" {
-		return u
+		return strings.TrimRight(u, "/")
 	}
-	return "http://localhost/flowwithlit"
+	return "https://app.flowwithlit.com"
 }

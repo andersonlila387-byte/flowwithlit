@@ -4,14 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"flowwithlit/internal/database"
 	"flowwithlit/internal/envfilter"
-	"flowwithlit/internal/integration/circle"
-	"flowwithlit/internal/bankrails"
-	"flowwithlit/internal/providers"
 	"flowwithlit/internal/models"
 	"flowwithlit/internal/rates"
 	"flowwithlit/pkg/middleware"
@@ -219,7 +215,12 @@ func GetRatesHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GetDepositDetailsHandler returns deposit instructions for fiat (OnePipe) and crypto (Circle)
+// GetDepositDetailsHandler returns the user's default deposit instructions — a
+// stable, persisted fiat account (see EnsureDefaultDepositAccount) and their
+// default USDT crypto address (see EnsureDefaultCryptoAddress). Kept for backward
+// compatibility with existing frontends; new frontends should prefer
+// GetDepositAccountsHandler / GetCryptoAddressesHandler, which support more than
+// one currency/asset per user.
 func GetDepositDetailsHandler(w http.ResponseWriter, r *http.Request) {
 	userID, ok := r.Context().Value(middleware.UserIDKey).(uint)
 	if !ok {
@@ -227,40 +228,31 @@ func GetDepositDetailsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var user models.User
-	if err := database.DB.First(&user, userID).Error; err != nil {
-		response.Error(w, http.StatusNotFound, "User not found")
+	account, err := EnsureDefaultDepositAccount(userID)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "Could not prepare your deposit account: "+err.Error())
+		return
+	}
+	cryptoAddr, err := EnsureDefaultCryptoAddress(userID)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "Could not prepare your crypto address: "+err.Error())
 		return
 	}
 
-	fiatCur := strings.ToUpper(strings.TrimSpace(user.DefaultFiatCurrency))
-	if fiatCur == "" {
-		fiatCur = "NGN"
-	}
-
-	rail, _ := bankrails.Resolve(fiatCur, user.FirstName, user.LastName, user.Email, user.Phone)
-	providerName := "Flutterwave"
-	if rail.Provider == providers.OnePipe {
-		providerName = "OnePipe"
-	}
-
-	// Circle crypto wallet (mock)
-	cryptoAddress, _ := circle.NewClient("", "").GenerateWalletAddress("TRC20")
-
 	response.Success(w, http.StatusOK, map[string]interface{}{
 		"fiat": map[string]interface{}{
-			"currency":         rail.Currency,
-			"account_number":   rail.AccountNumber,
-			"bank_name":        rail.BankName,
-			"account_name":     user.FirstName + " " + user.LastName + " (via " + providerName + ")",
-			"payment_provider": rail.Provider,
-			"instructions":     "Send " + rail.Currency + " to this account. Funds credit in seconds.",
+			"currency":         account.Currency,
+			"account_number":   account.AccountNumber,
+			"bank_name":        account.BankName,
+			"account_name":     account.AccountName,
+			"payment_provider": account.Provider,
+			"instructions":     "Send " + account.Currency + " to this account. Funds credit in seconds.",
 		},
 		"crypto": map[string]interface{}{
-			"currency": "USDT",
-			"network":  "TRC20",
-			"address":  cryptoAddress,
-			"instructions": "Send only USDT (TRC20). Other tokens will be lost.",
+			"currency":     cryptoAddr.Asset,
+			"network":      cryptoAddr.Network,
+			"address":      cryptoAddr.Address,
+			"instructions": "Send only " + cryptoAddr.Asset + " (" + cryptoAddr.Network + "). Other tokens will be lost.",
 		},
 	})
 }

@@ -21,10 +21,18 @@ func Connect() {
 	dbPort := os.Getenv("DB_PORT")
 	dbName := os.Getenv("DB_NAME")
 
-	if dbUser == "" { dbUser = "root" }
-	if dbHost == "" { dbHost = "127.0.0.1" }
-	if dbPort == "" { dbPort = "3306" }
-	if dbName == "" { dbName = "flowwithlit_db" }
+	if dbUser == "" {
+		dbUser = "root"
+	}
+	if dbHost == "" {
+		dbHost = "127.0.0.1"
+	}
+	if dbPort == "" {
+		dbPort = "3306"
+	}
+	if dbName == "" {
+		dbName = "flowwithlit_db"
+	}
 
 	// Optional TLS for remote MySQL providers that require/prefer an encrypted
 	// connection. Off by default to stay compatible with local dev and hosts
@@ -100,6 +108,8 @@ func Connect() {
 		&models.PayrollSettings{},
 		&models.PayrollRun{},
 		&models.PayrollRunItem{},
+		&models.DepositAccount{},
+		&models.CryptoDepositAddress{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to auto-migrate database: %v", err)

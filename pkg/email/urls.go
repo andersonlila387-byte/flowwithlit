@@ -9,7 +9,7 @@ func AppFrontendURL() string {
 	if u := strings.TrimSpace(os.Getenv("FRONTEND_URL")); u != "" {
 		return strings.TrimRight(u, "/")
 	}
-	return "http://localhost/flowwithlit/app"
+	return "https://app.flowwithlit.com"
 }
 
 func CheckoutBaseURL() string {
