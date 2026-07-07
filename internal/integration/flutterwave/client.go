@@ -226,3 +226,35 @@ func (c *Client) ProcessTransfer(amount float64, currency, bankCode, accountNumb
 	log.Printf("[Flutterwave Mock] Transfer %.2f %s to %s", amount, currency, accountNumber)
 	return true, "FLW_MOCK_" + fmt.Sprintf("%d", time.Now().Unix()), nil
 }
+
+// VerifyBVN performs KYC BVN verification for Nigerian customers via Flutterwave.
+func (c *Client) VerifyBVN(bvn string) (bool, error) {
+	if !c.Configured() {
+		return false, fmt.Errorf("Flutterwave secret key not configured in Admin → Settings → Payment Providers")
+	}
+
+	bvn = strings.TrimSpace(bvn)
+	if len(bvn) != 11 {
+		return false, fmt.Errorf("BVN must be exactly 11 digits")
+	}
+
+	path := fmt.Sprintf("/kyc/bvns/%s", bvn)
+	data, code, err := c.authRequest(http.MethodGet, path, nil)
+	if err != nil {
+		return false, err
+	}
+
+	if code < 200 || code >= 300 {
+		return false, fmt.Errorf("Flutterwave BVN verification failed HTTP %d: %s", code, strings.TrimSpace(string(data)))
+	}
+
+	var out struct {
+		Status  string `json:"status"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return false, err
+	}
+
+	return strings.EqualFold(out.Status, "success"), nil
+}

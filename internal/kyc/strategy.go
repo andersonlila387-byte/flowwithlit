@@ -20,7 +20,7 @@ type IdentityPayload struct {
 
 // KYCProvider defines the contract for any identity verification engine
 type KYCProvider interface {
-	VerifyIdentity(payload IdentityPayload) (bool, error)
+	VerifyIdentity(payload IdentityPayload) (string, error)
 	Name() string
 }
 
@@ -32,35 +32,35 @@ type MockProvider struct{}
 
 func (m *MockProvider) Name() string { return "MockProvider" }
 
-func (m *MockProvider) VerifyIdentity(payload IdentityPayload) (bool, error) {
+func (m *MockProvider) VerifyIdentity(payload IdentityPayload) (string, error) {
 	country := strings.ToUpper(payload.CountryCode)
 
 	switch country {
 	case "NG":
 		if payload.PrimaryIDType != "BVN" && payload.PrimaryIDType != "NIN" {
-			return false, errors.New("Nigeria requires BVN or NIN")
+			return "failed", errors.New("Nigeria requires BVN or NIN")
 		}
 		if payload.PrimaryIDType == "BVN" && len(payload.PrimaryIDVal) != 11 {
-			return false, errors.New("Mock BVN must be 11 digits")
+			return "failed", errors.New("Mock BVN must be 11 digits")
 		}
 	case "US":
 		if payload.PrimaryIDType != "SSN" && payload.PrimaryIDType != "EIN" {
-			return false, errors.New("US requires SSN or EIN")
+			return "failed", errors.New("US requires SSN or EIN")
 		}
 		if len(payload.PrimaryIDVal) < 9 {
-			return false, errors.New("Invalid Mock SSN/EIN length")
+			return "failed", errors.New("Invalid Mock SSN/EIN length")
 		}
 	case "GB":
 		if payload.PrimaryIDType != "CRN" {
-			return false, errors.New("UK requires Company Registration Number")
+			return "failed", errors.New("UK requires Company Registration Number")
 		}
 	default:
 		if payload.PrimaryIDType != "PASSPORT" && payload.PrimaryIDType != "NATIONAL_ID" {
-			return false, fmt.Errorf("country %s requires PASSPORT or NATIONAL_ID", country)
+			return "failed", fmt.Errorf("country %s requires PASSPORT or NATIONAL_ID", country)
 		}
 	}
 
-	return true, nil
+	return "approved", nil
 }
 
 // ----------------------------------------------------------------------------
@@ -78,7 +78,7 @@ func NewSmileIDProvider() *SmileIDProvider {
 
 func (s *SmileIDProvider) Name() string { return "SmileID" }
 
-func (s *SmileIDProvider) VerifyIdentity(payload IdentityPayload) (bool, error) {
+func (s *SmileIDProvider) VerifyIdentity(payload IdentityPayload) (string, error) {
 	ok, _, err := s.client.VerifyIDNumber(
 		payload.CountryCode,
 		payload.PrimaryIDType,
@@ -86,5 +86,41 @@ func (s *SmileIDProvider) VerifyIdentity(payload IdentityPayload) (bool, error) 
 		"",
 		payload.UserID,
 	)
-	return ok, err
+	if err != nil {
+		return "failed", err
+	}
+	if !ok {
+		return "failed", errors.New("Smile ID verification failed")
+	}
+	return "approved", nil
+}
+
+// ----------------------------------------------------------------------------
+// FLUTTERWAVE + HYBRID MANUAL PROVIDER
+// ----------------------------------------------------------------------------
+
+type FlutterwaveProvider struct{}
+
+func (f *FlutterwaveProvider) Name() string { return "Flutterwave" }
+
+func (f *FlutterwaveProvider) VerifyIdentity(payload IdentityPayload) (string, error) {
+	// Flutterwave only supports BVN for Nigeria
+	if strings.ToUpper(payload.CountryCode) == "NG" && payload.PrimaryIDType == "BVN" {
+		client := settings.FlutterwaveClient()
+		if client.Configured() {
+			ok, err := client.VerifyBVN(payload.PrimaryIDVal)
+			if err != nil {
+				return "failed", err
+			}
+			if ok {
+				return "approved", nil
+			}
+			return "failed", errors.New("BVN verification failed")
+		}
+		// If Flutterwave keys aren't configured, fallback to manual review
+		return "pending", nil
+	}
+
+	// For international users or other ID types, default to manual review
+	return "pending", nil
 }

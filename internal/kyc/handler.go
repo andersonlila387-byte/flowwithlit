@@ -20,11 +20,13 @@ func getActiveProvider() KYCProvider {
 	switch settings.KYCProvider() {
 	case "mock":
 		return &MockProvider{}
+	case "flutterwave":
+		return &FlutterwaveProvider{}
 	case "smileid":
 		return NewSmileIDProvider()
 	default:
-		// Default to Smile ID once keys are added in admin; mock only when explicitly chosen.
-		return NewSmileIDProvider()
+		// Default to Flutterwave since it has manual fallback, or Smile ID
+		return &FlutterwaveProvider{}
 	}
 }
 
@@ -90,8 +92,8 @@ func ActivateHandler(w http.ResponseWriter, r *http.Request) {
 		UserID:        fmt.Sprintf("%d", userID),
 	}
 
-	valid, err := provider.VerifyIdentity(identityPayload)
-	if !valid || err != nil {
+	status, err := provider.VerifyIdentity(identityPayload)
+	if status == "failed" || err != nil {
 		errMsg := "Identity verification failed"
 		if err != nil {
 			errMsg = err.Error()
@@ -135,6 +137,14 @@ func ActivateHandler(w http.ResponseWriter, r *http.Request) {
 		AccountNumber:  req.AccountNumber,
 	}
 
+	if status == "approved" {
+		profile.KYCStatus = "approved"
+		user.KYCLevel = 1
+	} else if status == "pending" {
+		profile.KYCStatus = "pending"
+		user.KYCLevel = 0
+	}
+
 	var existing models.BusinessProfile
 	if err := database.DB.Where("user_id = ?", user.ID).First(&existing).Error; err == nil {
 		profile.ID = existing.ID
@@ -144,8 +154,6 @@ func ActivateHandler(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusInternalServerError, "Failed to save business profile")
 		return
 	}
-
-	user.KYCLevel = 1
 	user.DefaultFiatCurrency = fiatCur
 	user.DefaultCryptoCurrency = cryptoCur
 	if err := database.DB.Save(&user).Error; err != nil {
