@@ -44,20 +44,16 @@ func registerPendingBankTransfer(ref string, userID uint, amountKobo float64, cu
 	}
 }
 
+// merchantDisplayName is shown to the paying customer on the checkout page
+// ("Pay X"), so it must only ever be the merchant's registered business name
+// — never the account owner's personal name or email, which would leak
+// private info about who's behind the store.
 func merchantDisplayName(userID uint) string {
 	var profile models.BusinessProfile
 	if err := database.DB.Where("user_id = ?", userID).First(&profile).Error; err == nil {
 		if name := strings.TrimSpace(profile.BusinessName); name != "" {
 			return name
 		}
-	}
-
-	var user models.User
-	if err := database.DB.Select("first_name, last_name, email").First(&user, userID).Error; err == nil {
-		if name := strings.TrimSpace(user.FirstName + " " + user.LastName); name != "" {
-			return name
-		}
-		return user.Email
 	}
 
 	return "Merchant"
