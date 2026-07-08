@@ -51,19 +51,38 @@ func main() {
 	// Initialize Router
 	r := chi.NewRouter()
 
-	// Basic CORS settings
-	// flowwithlitExtensionOrigin is the browser extension's fixed origin, derived from the
-	// public key pinned in extension/manifest.json — chrome-extension:// origins don't match
-	// the http/https wildcard patterns below, so it needs an explicit AllowOriginFunc check.
-	// go-chi/cors ignores AllowedOrigins entirely once AllowOriginFunc is set, so the
-	// http/https wildcard behavior that used to live in AllowedOrigins is reproduced below.
+	// CORS: locked to our own first-party origins + the browser extension, instead
+	// of the previous "any http/https origin" rule. Every PHP page in this project
+	// (app/, admin/, checkout/, demo/, the inline.js merchant embed) talks to this
+	// API server-side via cURL (see includes/api_client.php) — the browser never
+	// calls api.flowwithlit.com directly except from the extension. So the old
+	// wildcard bought no real functionality, just let any website's JS script
+	// requests straight against api.flowwithlit.com (with credentials) on behalf
+	// of whoever had it open.
 	const flowwithlitExtensionOrigin = "chrome-extension://oobmbnjnkfllnaonmhdkpladmacbnaih"
+	isProdEnv := strings.EqualFold(strings.TrimSpace(os.Getenv("ENVIRONMENT")), "production")
+
+	firstPartyOrigins := map[string]bool{
+		"https://flowwithlit.com":          true,
+		"https://app.flowwithlit.com":      true,
+		"https://auth.flowwithlit.com":     true,
+		"https://admin.flowwithlit.com":    true,
+		"https://support.flowwithlit.com":  true,
+		"https://checkout.flowwithlit.com": true,
+		"https://pay.flowwithlit.com":      true,
+		"https://demo.flowwithlit.com":     true,
+	}
+
 	r.Use(cors.Handler(cors.Options{
 		AllowOriginFunc: func(r *http.Request, origin string) bool {
-			if origin == flowwithlitExtensionOrigin {
+			if origin == flowwithlitExtensionOrigin || firstPartyOrigins[origin] {
 				return true
 			}
-			return strings.HasPrefix(origin, "https://") || strings.HasPrefix(origin, "http://")
+			// Local/ngrok dev only — never relaxed when ENVIRONMENT=production.
+			if !isProdEnv && (strings.HasPrefix(origin, "http://localhost") || strings.HasPrefix(origin, "http://127.0.0.1")) {
+				return true
+			}
+			return false
 		},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
@@ -83,14 +102,16 @@ func main() {
 
 	// Auth Routes
 	r.Route("/auth", func(r chi.Router) {
-		r.Post("/register", auth.RegisterHandler)
-		r.Post("/login", auth.LoginHandler)
-		r.Post("/login-2fa", auth.Login2FAHandler)
-		r.Post("/forgot-password", auth.ForgotPasswordHandler)
-		r.Post("/verify-reset-code", auth.VerifyResetCodeHandler)
-		r.Post("/reset-password", auth.ResetPasswordHandler)
+		// Credential-guessing / spam surfaces — capped per IP so brute-forcing a
+		// password, a 2FA code, or a password-reset code isn't just a for-loop away.
+		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/register", auth.RegisterHandler)
+		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/login", auth.LoginHandler)
+		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/login-2fa", auth.Login2FAHandler)
+		r.With(myMiddleware.RateLimit(5, 1*time.Minute)).Post("/forgot-password", auth.ForgotPasswordHandler)
+		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/verify-reset-code", auth.VerifyResetCodeHandler)
+		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/reset-password", auth.ResetPasswordHandler)
 		r.Post("/verify-email", auth.VerifyEmailHandler)
-		r.Post("/resend-verification", auth.ResendVerificationHandler)
+		r.With(myMiddleware.RateLimit(5, 1*time.Minute)).Post("/resend-verification", auth.ResendVerificationHandler)
 		r.Post("/refresh", auth.RefreshHandler)
 	})
 
@@ -227,9 +248,11 @@ func main() {
 
 	// Admin endpoints (Settings & Auth)
 	r.Route("/admin", func(r chi.Router) {
-		r.Post("/auth/login", admin.AdminLogin)
+		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/auth/login", admin.AdminLogin)
 		r.Get("/auth/register-status", admin.AdminRegisterStatus)
-		r.Post("/auth/register", admin.AdminRegister) // Backdoor for initial setup (max 3 admins)
+		// Initial-setup route, also gated by ADMIN_SETUP_SECRET (see AdminRegister) —
+		// rate limited too since it's still reachable pre-auth on a live URL.
+		r.With(myMiddleware.RateLimit(5, 1*time.Minute)).Post("/auth/register", admin.AdminRegister)
 
 		r.With(admin.RequireAdminAuth).Get("/me", admin.GetAdminMeHandler)
 		r.With(admin.RequireAdminAuth).Get("/users", admin.GetUsersHandler)
@@ -300,7 +323,9 @@ func main() {
 		r.Get("/rates", checkout.PublicRatesHandler)
 		r.Get("/currencies", checkout.PublicCurrenciesHandler)
 		r.Get("/crypto-assets", checkout.PublicCryptoAssetsHandler)
-		r.Post("/charge", checkout.ChargeHandler)
+		// Unauthenticated (public_key only) and takes raw card details — rate limit
+		// per IP so it can't be used for card-testing / brute-forcing card numbers.
+		r.With(myMiddleware.RateLimit(15, 1*time.Minute)).Post("/charge", checkout.ChargeHandler)
 
 		// Guest support chat (marketing site, no login required). Rate-limited since
 		// it's the only unauthenticated route that calls the paid Anthropic API.

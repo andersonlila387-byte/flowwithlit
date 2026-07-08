@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"crypto/hmac"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -127,17 +128,27 @@ func SmileIDHandler(w http.ResponseWriter, r *http.Request) {
 		eventType = "kyc_" + code
 	}
 
+	// Signature verification is mandatory, not best-effort: this webhook can upgrade
+	// a user's KYC tier, so skipping the check whenever a field is missing would let
+	// anyone self-approve KYC with a forged payload and no signature at all.
 	cfg := settings.SmileID()
-	if sig, _ := body["signature"].(string); sig != "" {
-		ts, _ := body["timestamp"].(string)
-		if ts != "" && cfg.Configured() {
-			expected := smileid.GenerateSignature(cfg.APIKey, cfg.PartnerID, ts)
-			if sig != expected {
-				logWebhook("smileid", eventType, string(raw), "failed", "Invalid signature", ip, time.Since(start).Milliseconds())
-				http.Error(w, "Invalid signature", http.StatusUnauthorized)
-				return
-			}
-		}
+	if !cfg.Configured() {
+		logWebhook("smileid", eventType, string(raw), "failed", "Smile ID not configured", ip, time.Since(start).Milliseconds())
+		http.Error(w, "Not configured", http.StatusServiceUnavailable)
+		return
+	}
+	sig, _ := body["signature"].(string)
+	ts, _ := body["timestamp"].(string)
+	if sig == "" || ts == "" {
+		logWebhook("smileid", eventType, string(raw), "failed", "Missing signature", ip, time.Since(start).Milliseconds())
+		http.Error(w, "Missing signature", http.StatusUnauthorized)
+		return
+	}
+	expected := smileid.GenerateSignature(cfg.APIKey, cfg.PartnerID, ts)
+	if !hmac.Equal([]byte(sig), []byte(expected)) {
+		logWebhook("smileid", eventType, string(raw), "failed", "Invalid signature", ip, time.Since(start).Milliseconds())
+		http.Error(w, "Invalid signature", http.StatusUnauthorized)
+		return
 	}
 
 	// Upgrade KYC tier when Smile ID validates (0810 = ID validated)

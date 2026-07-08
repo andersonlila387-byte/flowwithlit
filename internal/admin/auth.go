@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"flowwithlit/internal/database"
 	"flowwithlit/internal/models"
@@ -120,14 +121,27 @@ func AdminRegister(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	var req struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
-		Role     string `json:"role"`
+		Email       string `json:"email"`
+		Password    string `json:"password"`
+		Role        string `json:"role"`
+		SetupSecret string `json:"setup_secret"`
 	}
-	
+
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]interface{}{"status": false, "message": "Invalid payload"})
+		return
+	}
+
+	// This route is unauthenticated by design (it's how the very first admin gets
+	// created), so the "fewer than 3 admins exist" check below is not enough on its
+	// own — anyone who finds the URL could otherwise mint themselves a SUPER_ADMIN
+	// account. Require the deployer-only ADMIN_SETUP_SECRET too, and fail closed if
+	// it was never configured rather than silently allowing open registration.
+	wantSecret := strings.TrimSpace(os.Getenv("ADMIN_SETUP_SECRET"))
+	if wantSecret == "" || subtle.ConstantTimeCompare([]byte(strings.TrimSpace(req.SetupSecret)), []byte(wantSecret)) != 1 {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]interface{}{"status": false, "message": "Invalid setup secret"})
 		return
 	}
 
@@ -208,6 +222,9 @@ func RequireAdminAuth(next http.Handler) http.Handler {
 		
 		// Parse the token using the admin secret
 		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, jwt.ErrTokenSignatureInvalid
+			}
 			return getAdminJWTSecret(), nil
 		})
 
