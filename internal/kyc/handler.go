@@ -83,6 +83,11 @@ func ActivateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if strings.TrimSpace(req.BusinessName) == "" {
+		response.Error(w, http.StatusBadRequest, "Company name is required")
+		return
+	}
+
 	provider := getActiveProvider()
 
 	identityPayload := IdentityPayload{
