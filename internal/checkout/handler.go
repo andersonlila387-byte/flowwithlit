@@ -100,11 +100,12 @@ func BankDetailsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	merchantName := merchantDisplayName(creds.UserID)
-	providerLabel := rail.Provider
-	if rail.Provider == providers.OnePipe {
+	providerLabel := "Flutterwave"
+	switch rail.Provider {
+	case providers.OnePipe:
 		providerLabel = "OnePipe"
-	} else {
-		providerLabel = "Flutterwave"
+	case providers.PalmPay:
+		providerLabel = "PalmPay"
 	}
 
 	response.Success(w, http.StatusOK, map[string]interface{}{

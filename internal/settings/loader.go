@@ -7,8 +7,10 @@ import (
 	"flowwithlit/internal/database"
 	"flowwithlit/internal/integration/flutterwave"
 	"flowwithlit/internal/integration/onepipe"
+	"flowwithlit/internal/integration/palmpay"
 	"flowwithlit/internal/integration/smileid"
 	"flowwithlit/internal/models"
+	"flowwithlit/internal/providers"
 )
 
 var cache sync.Map
@@ -66,4 +68,20 @@ func OnePipeClient() *onepipe.Client {
 // FlutterwaveClient builds a Flutterwave client using admin payment keys.
 func FlutterwaveClient() *flutterwave.Client {
 	return flutterwave.NewClient(strings.TrimSpace(Get("flutterwave_secret_key")), "")
+}
+
+// PalmPayClient builds a PalmPay client using admin payment keys (future NGN rail).
+func PalmPayClient() *palmpay.Client {
+	return palmpay.NewClient(
+		strings.TrimSpace(Get("palmpay_api_key")),
+		strings.TrimSpace(Get("palmpay_secret")),
+		strings.TrimSpace(Get("palmpay_merchant_id")),
+		"",
+	)
+}
+
+// NGNBankProvider returns the active NGN bank rail: "onepipe" (default) or "palmpay".
+// Invalid values fall back to OnePipe so live traffic is never broken by a bad setting.
+func NGNBankProvider() string {
+	return providers.NormalizeNGNProvider(Get("ngn_bank_provider"))
 }

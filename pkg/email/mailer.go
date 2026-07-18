@@ -154,6 +154,18 @@ func SendLoginAlert(to, firstName, ipAddress string) error {
 	})
 }
 
+// SendDeviceVerifyOTP emails a 6-digit code when signing in from a new device/browser.
+func SendDeviceVerifyOTP(to, firstName, otp, device, ipAddress string) error {
+	return sendTemplate(to, "New device sign-in code — Flowwithlit", "device-verify", map[string]interface{}{
+		"first_name":     firstName,
+		"otp":            otp,
+		"expiry_minutes": "15",
+		"device":         device,
+		"ip_address":     ipAddress,
+		"login_time":     time.Now().Format("Jan 02, 2006 at 03:04 PM"),
+	})
+}
+
 // SendTransferSent notifies sender of an internal wallet transfer.
 func SendTransferSent(to, firstName, recipientEmail string, amount float64, currency string) error {
 	return sendTemplate(to, "Transfer Sent", "transfer-sent", map[string]interface{}{

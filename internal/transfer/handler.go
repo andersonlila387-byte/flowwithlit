@@ -143,15 +143,23 @@ func CreateBankTransferHandler(w http.ResponseWriter, r *http.Request) {
 		"1-3 business days", req.Amount, req.Currency,
 	)
 
-	payoutProvider := providers.ForPayout(req.Currency)
+	payoutProvider := providers.ForPayout(req.Currency, settings.NGNBankProvider())
 	var providerRef string
-	if payoutProvider == providers.OnePipe {
+	switch payoutProvider {
+	case providers.OnePipe:
 		client := settings.OnePipeClient()
 		ok, pRef, _ := client.ProcessTransfer(req.Amount, req.BankCode, req.AccountNumber, req.Description)
 		if ok {
 			providerRef = pRef
 		}
-	} else {
+	case providers.PalmPay:
+		// Future NGN rail — only reached when Admin sets ngn_bank_provider=palmpay.
+		client := settings.PalmPayClient()
+		ok, pRef, _ := client.ProcessTransfer(req.Amount, req.BankCode, req.AccountNumber, req.Description)
+		if ok {
+			providerRef = pRef
+		}
+	default:
 		client := settings.FlutterwaveClient()
 		ok, pRef, _ := client.ProcessTransfer(req.Amount, req.Currency, req.BankCode, req.AccountNumber, req.Description)
 		if ok {

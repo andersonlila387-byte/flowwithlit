@@ -24,6 +24,10 @@ type User struct {
 	IsEmailVerified bool          `gorm:"default:false" json:"is_email_verified"`
 	VerificationOTP *string       `gorm:"size:6" json:"-"`
 	VerificationOTPExpiry *time.Time `json:"-"`
+	// New-device login email challenge (cleared after success)
+	DeviceOTP              *string    `gorm:"size:6" json:"-"`
+	DeviceOTPExpiry        *time.Time `json:"-"`
+	DevicePendingFingerprint string   `gorm:"size:64" json:"-"`
 	TwoFactorEnabled bool         `gorm:"default:false" json:"two_factor_enabled"`
 	TwoFactorSecret  string       `gorm:"size:255" json:"-"`
 	SmsNotificationsEnabled bool  `gorm:"default:true" json:"sms_notifications_enabled"`

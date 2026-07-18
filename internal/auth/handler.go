@@ -129,8 +129,8 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Normal login without 2FA
-	finishLogin(w, r, user)
+	// Password OK — known devices finish login; new devices get email OTP first.
+	continueLoginAfterAuth(w, r, user)
 }
 
 // Login2FARequest defines the expected JSON body for 2FA login
@@ -178,7 +178,8 @@ func Login2FAHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	finishLogin(w, r, user)
+	// After TOTP, still require email OTP on brand-new devices.
+	continueLoginAfterAuth(w, r, user)
 }
 
 // finishLogin generates final tokens, records the session, and sends the response
@@ -190,21 +191,26 @@ func finishLogin(w http.ResponseWriter, r *http.Request, user models.User) {
 		return
 	}
 
-	// Record the Session in the Database
-	ip := r.RemoteAddr
-	if forwardedFor := r.Header.Get("X-Forwarded-For"); forwardedFor != "" {
-		ip = forwardedFor
-	}
+	ip := clientIP(r)
+	ua := requestUserAgent(r)
+	fp := deviceFingerprint(r)
+	label := deviceLabel(ua)
 
 	session := models.Session{
-		UserID:     user.ID,
-		Token:      refreshToken, // Using refresh token to uniquely identify session
-		IPAddress:  ip,
-		UserAgent:  r.UserAgent(),
-		Device:     "Web Browser",
-		LastActive: time.Now(),
+		UserID:      user.ID,
+		Token:       refreshToken, // Using refresh token to uniquely identify session
+		IPAddress:   ip,
+		UserAgent:   ua,
+		Device:      label,
+		Fingerprint: fp,
+		LastActive:  time.Now(),
 	}
 	database.DB.Create(&session)
+
+	// Keep trusted-device last-seen fresh for known devices
+	if isKnownDevice(user.ID, fp) {
+		trustDevice(user.ID, fp, label, ua, ip)
+	}
 
 	// Login alert — synchronous send via PHPMailer dispatch
 	_ = email.SendLoginAlert(user.Email, user.FirstName, ip)

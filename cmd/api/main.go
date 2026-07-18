@@ -107,6 +107,11 @@ func main() {
 		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/register", auth.RegisterHandler)
 		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/login", auth.LoginHandler)
 		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/login-2fa", auth.Login2FAHandler)
+		// New-device email OTP (after password / 2FA) — tight rate limits to stop code guessing
+		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/verify-device", auth.VerifyDeviceHandler)
+		r.With(myMiddleware.RateLimit(5, 1*time.Minute)).Post("/resend-device-code", auth.ResendDeviceCodeHandler)
+		// Tab close / logout — ends the browser session server-side
+		r.With(myMiddleware.RateLimit(30, 1*time.Minute)).Post("/end-session", auth.EndSessionHandler)
 		r.With(myMiddleware.RateLimit(5, 1*time.Minute)).Post("/forgot-password", auth.ForgotPasswordHandler)
 		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/verify-reset-code", auth.VerifyResetCodeHandler)
 		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/reset-password", auth.ResetPasswordHandler)
@@ -125,8 +130,8 @@ func main() {
 		r.Post("/pin/setup", user.SetupPINHandler)
 		r.With(myMiddleware.RateLimit(5, 1*time.Minute)).Post("/pin/verify", user.VerifyPINHandler)
 		r.Get("/2fa/generate", user.Generate2FAHandler)
-		r.Post("/2fa/verify", user.Verify2FAHandler)
-		r.Post("/2fa/disable", user.Disable2FAHandler)
+		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/2fa/verify", user.Verify2FAHandler)
+		r.With(myMiddleware.RateLimit(5, 1*time.Minute)).Post("/2fa/disable", user.Disable2FAHandler)
 		r.Get("/sessions", user.GetSessionsHandler)
 		r.Delete("/sessions/revoke", user.RevokeSessionHandler)
 		r.Get("/notifications", user.GetNotificationsHandler)
@@ -139,6 +144,7 @@ func main() {
 		r.Post("/tickets", user.CreateTicketHandler)
 
 		// Support live chat (user side)
+		r.Get("/support/chat/sessions", support.GetUserSessionsHandler)
 		r.Post("/support/chat/start", support.StartChatHandler)
 		r.Post("/support/chat/message", support.SendMessageHandler)
 		r.Get("/support/chat/messages/{ref}", support.GetUserMessagesHandler)
@@ -163,7 +169,7 @@ func main() {
 		// Wallets & Swap (Phase 1-2)
 		r.Get("/wallets", wallet.GetWalletsHandler)
 		r.Get("/wallets/balances", wallet.GetBalancesHandler)
-		r.Post("/wallets/swap", wallet.SwapHandler)
+		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/wallets/swap", wallet.SwapHandler)
 		r.Get("/rates", wallet.GetRatesHandler)
 
 		// Funding / Deposit details (OnePipe + Circle)
@@ -192,7 +198,7 @@ func main() {
 		// Virtual Cards (Phase 3)
 		r.Get("/cards", card.GetCardsHandler)
 		r.Post("/cards", card.CreateCardHandler)
-		r.Post("/cards/{id}/fund", card.FundCardHandler)
+		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/cards/{id}/fund", card.FundCardHandler)
 		r.Post("/cards/{id}/freeze", card.FreezeCardHandler)
 		r.With(myMiddleware.RateLimit(5, 1*time.Minute)).Get("/cards/{id}/reveal", card.RevealCardHandler)
 
@@ -348,12 +354,16 @@ func main() {
 		r.Post("/send-test", admin.SendTestEmailHandler)
 	})
 
-	// Webhooks (Publicly accessible by providers, but secured by signature verification)
+	// Webhooks (publicly reachable by providers). Soft signature verify when secrets
+	// are set in Admin; otherwise accept + log so live deposits never break.
+	// PalmPay route is reserved for the future NGN switch — OnePipe stays default.
 	r.Route("/webhooks", func(r chi.Router) {
+		r.Use(myMiddleware.RateLimit(120, 1*time.Minute))
 		r.Post("/onepipe", webhook.OnePipeHandler)
 		r.Post("/flutterwave", webhook.FlutterwaveHandler)
 		r.Post("/circle", webhook.CircleHandler)
 		r.Post("/smileid", webhook.SmileIDHandler)
+		r.Post("/palmpay", webhook.PalmPayHandler)
 	})
 
 	// Start the server (Render/Railway/Fly set PORT)

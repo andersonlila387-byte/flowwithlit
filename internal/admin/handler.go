@@ -63,6 +63,10 @@ func GetSettingsHandler(w http.ResponseWriter, r *http.Request) {
 	if result["smile_environment"] == "" {
 		result["smile_environment"] = "sandbox"
 	}
+	// NGN rail default stays OnePipe so live traffic is unchanged until PalmPay is switched on.
+	if result["ngn_bank_provider"] == "" {
+		result["ngn_bank_provider"] = "onepipe"
+	}
 
 	response.Success(w, http.StatusOK, result)
 }

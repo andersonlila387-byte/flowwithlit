@@ -78,6 +78,7 @@ func Connect() {
 		&models.Transaction{},
 		&models.FlowTag{},
 		&models.Session{},
+		&models.TrustedDevice{},
 		&models.Customer{},
 		&models.PaymentLink{},
 		&models.Invoice{},

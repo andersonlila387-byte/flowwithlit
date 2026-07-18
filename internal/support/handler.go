@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -192,6 +193,51 @@ func EscalateHandler(w http.ResponseWriter, r *http.Request) {
 	database.DB.Create(&queueMsg)
 
 	json.NewEncoder(w).Encode(map[string]interface{}{"status": true, "message": "Escalated to agent queue"})
+}
+
+// GetUserSessionsHandler — GET /user/support/chat/sessions
+// Lists the authenticated user's support conversations (history).
+func GetUserSessionsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	userID := r.Context().Value(middleware.UserIDKey).(uint)
+
+	var sessions []models.ChatSession
+	database.DB.Where("user_id = ?", userID).Order("updated_at desc").Limit(50).Find(&sessions)
+
+	type userSessionRow struct {
+		SessionRef   string `json:"session_ref"`
+		Status       string `json:"status"`
+		MessageCount int    `json:"message_count"`
+		LastMessage  string `json:"last_message"`
+		CreatedAt    string `json:"created_at"`
+		UpdatedAt    string `json:"updated_at"`
+	}
+
+	result := make([]userSessionRow, 0, len(sessions))
+	for _, s := range sessions {
+		var count int64
+		var lastMsg models.ChatMessage
+		database.DB.Model(&models.ChatMessage{}).Where("session_id = ?", s.ID).Count(&count)
+		database.DB.Where("session_id = ?", s.ID).Order("created_at desc").First(&lastMsg)
+		preview := lastMsg.Content
+		if len(preview) > 100 {
+			preview = preview[:100] + "…"
+		}
+		result = append(result, userSessionRow{
+			SessionRef:   s.SessionRef,
+			Status:       s.Status,
+			MessageCount: int(count),
+			LastMessage:  preview,
+			CreatedAt:    s.CreatedAt.Format(time.RFC3339),
+			UpdatedAt:    s.UpdatedAt.Format(time.RFC3339),
+		})
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": true,
+		"data":   map[string]interface{}{"sessions": result},
+		"body":   map[string]interface{}{"sessions": result},
+	})
 }
 
 // ── Agent handlers (admin auth) ───────────────────────────────────────────────

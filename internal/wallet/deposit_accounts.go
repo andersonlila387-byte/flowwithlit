@@ -13,7 +13,6 @@ import (
 	"flowwithlit/internal/database"
 	"flowwithlit/internal/integration/circle"
 	"flowwithlit/internal/models"
-	"flowwithlit/internal/providers"
 	"flowwithlit/internal/rates"
 	"flowwithlit/pkg/middleware"
 	"flowwithlit/pkg/response"
@@ -65,9 +64,10 @@ func createDepositAccount(user models.User, currency, countryCode string, isDefa
 	if err != nil {
 		return nil, err
 	}
-	providerName := "flutterwave"
-	if rail.Provider == providers.OnePipe {
-		providerName = "onepipe"
+	// Persist the actual rail (onepipe | palmpay | flutterwave). Default remains onepipe for NGN.
+	providerName := rail.Provider
+	if providerName == "" {
+		providerName = "flutterwave"
 	}
 
 	account := models.DepositAccount{
