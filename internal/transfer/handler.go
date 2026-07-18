@@ -10,6 +10,7 @@ import (
 	"flowwithlit/internal/models"
 	"flowwithlit/internal/providers"
 	"flowwithlit/internal/settings"
+	userPkg "flowwithlit/internal/user"
 	walletPkg "flowwithlit/internal/wallet"
 	"flowwithlit/pkg/email"
 	"flowwithlit/pkg/middleware"
@@ -24,7 +25,8 @@ type BankTransferRequest struct {
 	Amount        float64 `json:"amount"`
 	Currency      string  `json:"currency"`
 	Description   string  `json:"description"`
-	PIN           string  `json:"pin"` // In production: verify against user.TransactionPin
+	PIN           string  `json:"pin"`            // transaction PIN
+	PaymentToken  string  `json:"payment_token"` // optional: short-lived biometric payment auth
 }
 
 // BankNameLookupRequest for name enquiry
@@ -101,23 +103,14 @@ func CreateBankTransferHandler(w http.ResponseWriter, r *http.Request) {
 		req.Currency = "NGN"
 	}
 
-	// Verify Transaction PIN
-	if req.PIN == "" {
-		response.Error(w, http.StatusBadRequest, "Transaction PIN is required")
-		return
-	}
+	// Verify PIN or biometric payment_token (from POST /user/biometric/authorize)
 	var pinUser models.User
 	if err := database.DB.First(&pinUser, userID).Error; err != nil {
 		response.Error(w, http.StatusNotFound, "User not found")
 		return
 	}
-	if pinUser.TransactionPin == "" {
-		response.Error(w, http.StatusBadRequest, "Please set up your 4-digit Transaction PIN first in Settings")
-		return
-	}
-	dummy := models.User{Password: pinUser.TransactionPin}
-	if err := dummy.CheckPassword(req.PIN); err != nil {
-		response.Error(w, http.StatusUnauthorized, "Incorrect Transaction PIN")
+	if err := userPkg.VerifyDebitAuth(pinUser, req.PIN, req.PaymentToken); err != nil {
+		userPkg.WriteDebitAuthError(w, err)
 		return
 	}
 

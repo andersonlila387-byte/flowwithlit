@@ -2,6 +2,7 @@ package user
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"flowwithlit/internal/database"
@@ -28,13 +29,33 @@ func GetMeHandler(w http.ResponseWriter, r *http.Request) {
 
 	hasTransactionPin := user.TransactionPin != ""
 
+	// Mobile flags for this device (optional header X-Device-Id)
+	deviceID := strings.TrimSpace(r.Header.Get("X-Device-Id"))
+	biometricEnrolled := false
+	biometricLogin := false
+	biometricPay := false
+	if deviceID != "" {
+		var cred models.BiometricCredential
+		if err := database.DB.Where("user_id = ? AND device_id = ?", user.ID, deviceID).First(&cred).Error; err == nil {
+			biometricEnrolled = true
+			biometricLogin = cred.LoginEnabled
+			biometricPay = cred.PayEnabled
+		}
+	}
+	var pushCount int64
+	database.DB.Model(&models.PushDevice{}).Where("user_id = ? AND enabled = ?", user.ID, true).Count(&pushCount)
+
 	// Double check sensitive fields are cleared
 	user.Password = ""
 	user.TransactionPin = ""
 
 	response.Success(w, http.StatusOK, map[string]interface{}{
-		"user":                user,
-		"has_transaction_pin": hasTransactionPin,
+		"user":                 user,
+		"has_transaction_pin":  hasTransactionPin,
+		"biometric_enrolled":   biometricEnrolled,
+		"biometric_login":      biometricLogin,
+		"biometric_pay":        biometricPay,
+		"push_devices":         pushCount,
 	})
 }
 

@@ -111,6 +111,8 @@ func Connect() {
 		&models.PayrollRunItem{},
 		&models.DepositAccount{},
 		&models.CryptoDepositAddress{},
+		&models.BiometricCredential{},
+		&models.PushDevice{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to auto-migrate database: %v", err)

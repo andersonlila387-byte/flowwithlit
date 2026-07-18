@@ -112,6 +112,8 @@ func main() {
 		r.With(myMiddleware.RateLimit(5, 1*time.Minute)).Post("/resend-device-code", auth.ResendDeviceCodeHandler)
 		// Tab close / logout — ends the browser session server-side
 		r.With(myMiddleware.RateLimit(30, 1*time.Minute)).Post("/end-session", auth.EndSessionHandler)
+		// Mobile biometric login (fingerprint / Face ID unlocks device-held token)
+		r.With(myMiddleware.RateLimit(15, 1*time.Minute)).Post("/biometric/login", auth.BiometricLoginHandler)
 		r.With(myMiddleware.RateLimit(5, 1*time.Minute)).Post("/forgot-password", auth.ForgotPasswordHandler)
 		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/verify-reset-code", auth.VerifyResetCodeHandler)
 		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/reset-password", auth.ResetPasswordHandler)
@@ -134,6 +136,18 @@ func main() {
 		r.With(myMiddleware.RateLimit(5, 1*time.Minute)).Post("/2fa/disable", user.Disable2FAHandler)
 		r.Get("/sessions", user.GetSessionsHandler)
 		r.Delete("/sessions/revoke", user.RevokeSessionHandler)
+
+		// Mobile biometric (fingerprint / Face ID) — enroll + payment authorize
+		r.Get("/biometric/status", user.BiometricStatusHandler)
+		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/biometric/enable", user.BiometricEnableHandler)
+		r.Post("/biometric/disable", user.BiometricDisableHandler)
+		r.With(myMiddleware.RateLimit(20, 1*time.Minute)).Post("/biometric/authorize", user.BiometricAuthorizeHandler)
+
+		// Mobile push notification device tokens (FCM / APNs token storage)
+		r.Post("/push/register", user.RegisterPushHandler)
+		r.Post("/push/unregister", user.UnregisterPushHandler)
+		r.Get("/push/status", user.PushStatusHandler)
+
 		r.Get("/notifications", user.GetNotificationsHandler)
 		r.Get("/notifications/pending-broadcast", user.GetPendingBroadcastModalHandler)
 		r.Post("/notifications/dismiss-broadcast", user.DismissBroadcastModalHandler)
