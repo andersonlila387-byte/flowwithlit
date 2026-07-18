@@ -2,6 +2,7 @@ package transfer
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	walletPkg "flowwithlit/internal/wallet"
 	"flowwithlit/pkg/email"
 	"flowwithlit/pkg/middleware"
+	"flowwithlit/pkg/push"
 	"flowwithlit/pkg/response"
 )
 
@@ -143,6 +145,10 @@ func CreateBankTransferHandler(w http.ResponseWriter, r *http.Request) {
 	_ = email.SendWithdrawalInitiated(
 		pinUser.Email, pinUser.FirstName, bankName, accountMasked, ref,
 		"1-3 business days", req.Amount, req.Currency,
+	)
+	_ = push.SendToUser(userID, "Transfer sent",
+		fmt.Sprintf("You sent %s %.2f to %s (%s)", req.Currency, req.Amount, accountMasked, ref),
+		map[string]string{"type": "transfer", "reference": ref},
 	)
 
 	payoutProvider := providers.ForPayout(req.Currency, settings.NGNBankProvider())

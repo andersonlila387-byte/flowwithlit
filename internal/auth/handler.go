@@ -6,11 +6,13 @@ import (
 	"net/http"
 	"time"
 
+	"flowwithlit/internal/activity"
 	"flowwithlit/internal/database"
 	"flowwithlit/internal/models"
 	"flowwithlit/internal/referral"
 	"flowwithlit/pkg/email"
 	"flowwithlit/pkg/jwt"
+	"flowwithlit/pkg/push"
 	"flowwithlit/pkg/response"
 
 	"github.com/pquerna/otp/totp"
@@ -214,6 +216,13 @@ func finishLogin(w http.ResponseWriter, r *http.Request, user models.User) {
 
 	// Login alert — synchronous send via PHPMailer dispatch
 	_ = email.SendLoginAlert(user.Email, user.FirstName, ip)
+
+	// Mobile push (no-op if FCM not configured / no devices registered)
+	_ = push.SendToUser(user.ID, "New sign-in", "Your Flowwithlit account was signed in from "+label, map[string]string{
+		"type": "login",
+		"ip":   ip,
+	})
+	activity.Info("auth", "login_ok", "User signed in via "+label, activity.UID(user.ID), "", ip)
 
 	// Return strictly matching what frontend expects
 	response.Success(w, http.StatusOK, map[string]interface{}{

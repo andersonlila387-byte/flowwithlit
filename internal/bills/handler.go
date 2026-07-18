@@ -10,6 +10,7 @@ import (
 
 	"flowwithlit/internal/activity"
 	"flowwithlit/internal/database"
+	"flowwithlit/internal/integration/vtu"
 	"flowwithlit/internal/models"
 	"flowwithlit/internal/settings"
 	userPkg "flowwithlit/internal/user"
@@ -21,13 +22,32 @@ import (
 // CategoriesHandler — GET /user/bills/categories
 func CategoriesHandler(w http.ResponseWriter, r *http.Request) {
 	fw := settings.FlutterwaveClient()
+	vtuClient := vtu.NewFromEnv()
 	response.Success(w, http.StatusOK, map[string]interface{}{
-		"categories":          Categories(),
-		"provider":            "flutterwave",
-		"provider_configured": fw.Configured(),
-		"mode":                map[bool]string{true: "live_or_ready", false: "mock"}[fw.Configured()],
-		"note":                "When Flutterwave keys are set in Admin, purchases route to Flutterwave bills. Until then, mock mode debits wallet and marks success for UI testing (no real airtime sent).",
+		"categories": Categories(),
+		"providers": map[string]interface{}{
+			"vtu_sme": map[string]interface{}{
+				"configured": vtuClient.Configured(),
+				"role":       "Preferred for airtime + SME/gifting data (cheaper)",
+			},
+			"flutterwave": map[string]interface{}{
+				"configured": fw.Configured(),
+				"role":       "Fallback retail bills (airtime/data/power/cable)",
+			},
+		},
+		"mode": map[string]string{
+			"telecom": ternary(vtuClient.Configured(), "live_sme", ternary(fw.Configured(), "live_flw", "mock")),
+			"utility": ternary(fw.Configured(), "live_flw", "mock"),
+		},
+		"note": "SME/gifting uses VTU_API_KEY when set. Else Flutterwave admin keys. Else mock (free UI, wallet still debited).",
 	})
+}
+
+func ternary(cond bool, a, b string) string {
+	if cond {
+		return a
+	}
+	return b
 }
 
 // ProductsHandler — GET /user/bills/products?category=airtime
@@ -140,51 +160,72 @@ func PurchaseHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fw := settings.FlutterwaveClient()
+	// Provider order for airtime/data:
+	// 1) VTU/SME aggregator (cheaper SME + gifting) when VTU_API_KEY set
+	// 2) Flutterwave bills when secret key set
+	// 3) Mock (free UI testing — wallet still debited)
 	providerRef := ""
 	status := "successful"
 	mode := "mock"
+	providerName := "mock"
+	vtuClient := vtu.NewFromEnv()
+	fw := settings.FlutterwaveClient()
 
-	if fw.Configured() {
+	isTelecom := product.CategoryID == "airtime" || product.CategoryID == "data"
+	var payErr error
+	var okPay bool
+	var pRef string
+
+	if isTelecom && vtuClient.Configured() {
+		mode = "live_sme"
+		providerName = "vtu"
+		okPay, pRef, payErr = vtuClient.PayDataOrAirtime(product.CategoryID, product.ID, customer, amount, ref)
+	} else if fw.Configured() {
 		mode = "live"
-		okPay, pRef, err := fw.PayBill(product.CategoryID, product.BillerCode, product.ItemCode, customer, amount, currency, ref)
-		if err != nil || !okPay {
-			// Refund wallet on provider failure
-			_ = walletPkg.FundWallet(userID, amount, currency, "refund", ref+"-RFND", "Refund failed bill: "+desc)
-			msg := "Bill payment failed"
-			if err != nil {
-				msg = err.Error()
-			}
-			activity.Error("bill", "provider_failed", msg, activity.UID(userID), ref, r.RemoteAddr)
-			response.Error(w, http.StatusBadGateway, msg)
-			return
-		}
-		providerRef = pRef
-		database.DB.Model(&models.Transaction{}).Where("reference = ?", ref).Updates(map[string]interface{}{
-			"provider_reference": providerRef,
-			"type":               "bill_payment",
-		})
+		providerName = "flutterwave"
+		okPay, pRef, payErr = fw.PayBill(product.CategoryID, product.BillerCode, product.ItemCode, customer, amount, currency, ref)
 	} else {
 		log.Printf("[Bills Mock] %s amount=%.2f customer=%s ref=%s", product.ID, amount, customer, ref)
-		providerRef = "MOCK-" + ref
-		database.DB.Model(&models.Transaction{}).Where("reference = ?", ref).Updates(map[string]interface{}{
-			"provider_reference": providerRef,
-			"type":               "bill_payment",
-		})
+		okPay, pRef = true, "MOCK-"+ref
 	}
 
-	activity.Success("bill", "purchase_ok", desc, activity.UID(userID), ref, r.RemoteAddr)
+	if !okPay || payErr != nil {
+		_ = walletPkg.FundWallet(userID, amount, currency, "refund", ref+"-RFND", "Refund failed bill: "+desc)
+		msg := "Bill payment failed"
+		if payErr != nil {
+			msg = payErr.Error()
+		}
+		activity.Error("bill", "provider_failed", msg, activity.UID(userID), ref, r.RemoteAddr)
+		response.Error(w, http.StatusBadGateway, msg)
+		return
+	}
+	providerRef = pRef
+	database.DB.Model(&models.Transaction{}).Where("reference = ?", ref).Updates(map[string]interface{}{
+		"provider_reference": providerRef,
+		"provider":           providerName,
+		"type":               "bill_payment",
+	})
+
+	activity.Success("bill", "purchase_ok", desc+" ["+mode+"]", activity.UID(userID), ref, r.RemoteAddr)
+
+	msg := "Bill paid successfully"
+	if mode == "mock" {
+		msg = "Mock bill paid (wallet debited). Set VTU_API_KEY for cheap SME/gifting or Flutterwave keys for retail bills."
+	} else if mode == "live_sme" {
+		msg = "Paid via SME/gifting VTU provider (cheaper data path)."
+	}
 
 	response.Success(w, http.StatusOK, map[string]interface{}{
 		"reference":          ref,
 		"provider_reference": providerRef,
+		"provider":           providerName,
 		"status":             status,
 		"mode":               mode,
 		"product":            product,
 		"customer":           customer,
 		"amount":             amount,
 		"currency":           currency,
-		"message":            map[bool]string{true: "Bill paid successfully", false: "Mock bill paid (wallet debited). Configure Flutterwave for live airtime/data."}[fw.Configured()],
+		"message":            msg,
 	})
 }
 
