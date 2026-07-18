@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"os"
 	"strings"
 	"sync"
 
@@ -9,6 +10,7 @@ import (
 	"flowwithlit/internal/integration/onepipe"
 	"flowwithlit/internal/integration/palmpay"
 	"flowwithlit/internal/integration/smileid"
+	"flowwithlit/internal/integration/vtu"
 	"flowwithlit/internal/models"
 	"flowwithlit/internal/providers"
 )
@@ -84,4 +86,34 @@ func PalmPayClient() *palmpay.Client {
 // Invalid values fall back to OnePipe so live traffic is never broken by a bad setting.
 func NGNBankProvider() string {
 	return providers.NormalizeNGNProvider(Get("ngn_bank_provider"))
+}
+
+// envOrSetting prefers admin SystemSetting, then process environment.
+func envOrSetting(settingKey, envKey string) string {
+	if v := strings.TrimSpace(Get(settingKey)); v != "" {
+		return v
+	}
+	return strings.TrimSpace(os.Getenv(envKey))
+}
+
+// FCMServerKey is used for mobile push (legacy FCM HTTP API).
+// Set in Admin → Settings → Push (fcm_server_key) or env FCM_SERVER_KEY.
+func FCMServerKey() string {
+	return envOrSetting("fcm_server_key", "FCM_SERVER_KEY")
+}
+
+// VTUClient builds the SME/gifting data + airtime client (VTPass-style).
+// Keys: Admin fcm... wait vtu_api_key / vtu_secret_key / vtu_public_key / vtu_base_url
+// or env VTU_API_KEY, VTU_SECRET_KEY, VTU_PUBLIC_KEY, VTU_BASE_URL.
+func VTUClient() *vtu.Client {
+	base := envOrSetting("vtu_base_url", "VTU_BASE_URL")
+	if base == "" {
+		base = "https://vtpass.com/api"
+	}
+	return vtu.New(
+		envOrSetting("vtu_api_key", "VTU_API_KEY"),
+		envOrSetting("vtu_secret_key", "VTU_SECRET_KEY"),
+		envOrSetting("vtu_public_key", "VTU_PUBLIC_KEY"),
+		base,
+	)
 }

@@ -12,11 +12,20 @@ import (
 
 	"flowwithlit/internal/database"
 	"flowwithlit/internal/models"
+	"flowwithlit/internal/settings"
 )
 
-// Configured reports whether an FCM server key is present.
+// serverKey prefers Admin setting fcm_server_key, then env FCM_SERVER_KEY.
+func serverKey() string {
+	if v := strings.TrimSpace(settings.FCMServerKey()); v != "" {
+		return v
+	}
+	return strings.TrimSpace(os.Getenv("FCM_SERVER_KEY"))
+}
+
+// Configured reports whether an FCM server key is present (admin or env).
 func Configured() bool {
-	return strings.TrimSpace(os.Getenv("FCM_SERVER_KEY")) != ""
+	return serverKey() != ""
 }
 
 // RegisterOrUpdate stores a device push token for a user.
@@ -84,11 +93,11 @@ func SendToUser(userID uint, title, body string, data map[string]string) error {
 		return nil
 	}
 	if !Configured() {
-		log.Printf("[Push] FCM_SERVER_KEY not set — skipped push to user %d (%d devices). Title=%q", userID, len(devices), title)
+		log.Printf("[Push] FCM server key not set (Admin → Push or FCM_SERVER_KEY) — skipped push to user %d (%d devices). Title=%q", userID, len(devices), title)
 		return nil
 	}
 
-	key := strings.TrimSpace(os.Getenv("FCM_SERVER_KEY"))
+	key := serverKey()
 	for _, d := range devices {
 		if err := sendFCM(key, d.Token, title, body, data); err != nil {
 			log.Printf("[Push] FCM send failed user=%d platform=%s: %v", userID, d.Platform, err)

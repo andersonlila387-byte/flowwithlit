@@ -10,7 +10,6 @@ import (
 
 	"flowwithlit/internal/activity"
 	"flowwithlit/internal/database"
-	"flowwithlit/internal/integration/vtu"
 	"flowwithlit/internal/models"
 	"flowwithlit/internal/settings"
 	userPkg "flowwithlit/internal/user"
@@ -22,7 +21,7 @@ import (
 // CategoriesHandler — GET /user/bills/categories
 func CategoriesHandler(w http.ResponseWriter, r *http.Request) {
 	fw := settings.FlutterwaveClient()
-	vtuClient := vtu.NewFromEnv()
+	vtuClient := settings.VTUClient()
 	response.Success(w, http.StatusOK, map[string]interface{}{
 		"categories": Categories(),
 		"providers": map[string]interface{}{
@@ -39,7 +38,7 @@ func CategoriesHandler(w http.ResponseWriter, r *http.Request) {
 			"telecom": ternary(vtuClient.Configured(), "live_sme", ternary(fw.Configured(), "live_flw", "mock")),
 			"utility": ternary(fw.Configured(), "live_flw", "mock"),
 		},
-		"note": "SME/gifting uses VTU_API_KEY when set. Else Flutterwave admin keys. Else mock (free UI, wallet still debited).",
+		"note": "SME/gifting: Admin VTU keys (or env). Else Flutterwave. Else mock (wallet debited, no real top-up).",
 	})
 }
 
@@ -168,7 +167,7 @@ func PurchaseHandler(w http.ResponseWriter, r *http.Request) {
 	status := "successful"
 	mode := "mock"
 	providerName := "mock"
-	vtuClient := vtu.NewFromEnv()
+	vtuClient := settings.VTUClient()
 	fw := settings.FlutterwaveClient()
 
 	isTelecom := product.CategoryID == "airtime" || product.CategoryID == "data"

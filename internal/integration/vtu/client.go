@@ -13,24 +13,40 @@ import (
 )
 
 // Client talks to a cheap SME/gifting VTU aggregator (VTPass-style).
-// Env:
-//   VTU_API_KEY    - API key / secret
-//   VTU_BASE_URL   - e.g. https://vtpass.com/api  (optional)
+// Configure via Admin settings or env (VTU_API_KEY, VTU_SECRET_KEY, VTU_PUBLIC_KEY, VTU_BASE_URL).
 // When not configured, Pay returns mock success so mobile UI can develop free.
 type Client struct {
-	APIKey  string
-	BaseURL string
+	APIKey    string
+	SecretKey string
+	PublicKey string
+	BaseURL   string
 }
 
+func New(apiKey, secretKey, publicKey, baseURL string) *Client {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		baseURL = "https://vtpass.com/api"
+	}
+	return &Client{
+		APIKey:    strings.TrimSpace(apiKey),
+		SecretKey: strings.TrimSpace(secretKey),
+		PublicKey: strings.TrimSpace(publicKey),
+		BaseURL:   strings.TrimRight(baseURL, "/"),
+	}
+}
+
+// NewFromEnv is kept for callers that only have env (prefer settings.VTUClient).
 func NewFromEnv() *Client {
 	base := strings.TrimSpace(os.Getenv("VTU_BASE_URL"))
 	if base == "" {
 		base = "https://vtpass.com/api"
 	}
-	return &Client{
-		APIKey:  strings.TrimSpace(os.Getenv("VTU_API_KEY")),
-		BaseURL: strings.TrimRight(base, "/"),
-	}
+	return New(
+		os.Getenv("VTU_API_KEY"),
+		os.Getenv("VTU_SECRET_KEY"),
+		os.Getenv("VTU_PUBLIC_KEY"),
+		base,
+	)
 }
 
 func (c *Client) Configured() bool {
@@ -64,12 +80,15 @@ func (c *Client) PayDataOrAirtime(category, productCode, phone string, amount fl
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("api-key", c.APIKey)
-	// Some providers use Authorization: Bearer
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
-	if sk := strings.TrimSpace(os.Getenv("VTU_SECRET_KEY")); sk != "" {
+	if c.SecretKey != "" {
+		req.Header.Set("secret-key", c.SecretKey)
+	} else if sk := strings.TrimSpace(os.Getenv("VTU_SECRET_KEY")); sk != "" {
 		req.Header.Set("secret-key", sk)
 	}
-	if pk := strings.TrimSpace(os.Getenv("VTU_PUBLIC_KEY")); pk != "" {
+	if c.PublicKey != "" {
+		req.Header.Set("public-key", c.PublicKey)
+	} else if pk := strings.TrimSpace(os.Getenv("VTU_PUBLIC_KEY")); pk != "" {
 		req.Header.Set("public-key", pk)
 	}
 
