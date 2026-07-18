@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"time"
 )
 
 const defaultBaseURL = "https://api.flutterwave.com/v3"
@@ -62,20 +61,16 @@ func (c *Client) authRequest(method, path string, body interface{}) ([]byte, int
 
 // GenerateVirtualAccount creates a fiat virtual account for non-NGN currencies.
 func (c *Client) GenerateVirtualAccount(currency, email, customerName string) (string, string, error) {
+	if !c.Configured() {
+		return "", "", fmt.Errorf("Flutterwave secret key not configured in Admin → Settings (see key-get.md)")
+	}
 	cur := strings.ToUpper(strings.TrimSpace(currency))
 	if cur == "" {
 		cur = "USD"
 	}
-
-	if c.Configured() {
-		log.Printf("[Flutterwave] Creating %s virtual account for %s", cur, email)
-		// TODO: POST /virtual-account-numbers when live keys are active
-	}
-
-	log.Printf("[Flutterwave Mock] Generating %s virtual account for %s", cur, email)
-	mockAccountNumber := "40" + fmt.Sprintf("%08d", time.Now().UnixNano()%100000000)
-	mockBankName := "Wema Bank (Flutterwave)"
-	return mockAccountNumber, mockBankName, nil
+	log.Printf("[Flutterwave] Creating %s virtual account for %s", cur, email)
+	// Live: POST /v3/virtual-account-numbers (payload depends on currency/country)
+	return "", "", fmt.Errorf("Flutterwave virtual account live call not finished — keys present; complete VA API wiring (see key-get.md)")
 }
 
 // BankItem is a normalized bank for transfer UI.
@@ -218,21 +213,20 @@ func (c *Client) ChargeCard(amount float64, currency, email, ref string, card ma
 
 // ProcessTransfer sends a payout to a bank account (non-NGN currencies).
 func (c *Client) ProcessTransfer(amount float64, currency, bankCode, accountNumber, narration string) (bool, string, error) {
-	if c.Configured() {
-		log.Printf("[Flutterwave] Transfer %.2f %s → %s (live keys configured)", amount, currency, accountNumber)
-		// TODO: POST /transfers when live keys are active
+	if !c.Configured() {
+		return false, "", fmt.Errorf("Flutterwave secret key not configured in Admin → Settings (see key-get.md)")
 	}
-
-	log.Printf("[Flutterwave Mock] Transfer %.2f %s to %s", amount, currency, accountNumber)
-	return true, "FLW_MOCK_" + fmt.Sprintf("%d", time.Now().Unix()), nil
+	log.Printf("[Flutterwave] Transfer %.2f %s → %s", amount, currency, accountNumber)
+	// Live: POST /v3/transfers
+	return false, "", fmt.Errorf("Flutterwave transfer live call not finished — keys present; complete transfer API wiring (see key-get.md)")
 }
 
 // PayBill purchases airtime/data/electricity/cable via Flutterwave Bill Payments.
-// Soft path: when keys are missing, caller should mock. When keys exist, posts bill payment.
+// No mock: missing keys or provider rejection return a clear error (caller refunds).
 // productCategory: airtime | data | electricity | cable
 func (c *Client) PayBill(category, billerCode, itemCode, customer string, amount float64, currency, reference string) (bool, string, error) {
 	if !c.Configured() {
-		return false, "", fmt.Errorf("Flutterwave secret key not configured")
+		return false, "", fmt.Errorf("Flutterwave secret key not configured in Admin → Settings (see key-get.md)")
 	}
 	category = strings.ToLower(strings.TrimSpace(category))
 	customer = strings.TrimSpace(customer)

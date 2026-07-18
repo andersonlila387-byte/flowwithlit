@@ -132,7 +132,7 @@ func CreateBankTransferHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	accountMasked := maskBankAccount(req.AccountNumber)
 
-	// Debit the user's wallet using the manager
+	// Debit first, then live payout. On provider failure: refund + clear error (no silent mock).
 	err := walletPkg.DebitWallet(userID, req.Amount, fee, req.Currency, "bank", ref, req.Description+" to "+req.AccountNumber)
 	if err != nil {
 		activity.Error("transfer", "debit_failed", err.Error(), activity.UID(userID), ref, r.RemoteAddr)
@@ -140,6 +140,37 @@ func CreateBankTransferHandler(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
+
+	payoutProvider := providers.ForPayout(req.Currency, settings.NGNBankProvider())
+	var providerRef string
+	var payOK bool
+	var payErr error
+	switch payoutProvider {
+	case providers.OnePipe:
+		client := settings.OnePipeClient()
+		payOK, providerRef, payErr = client.ProcessTransfer(req.Amount, req.BankCode, req.AccountNumber, req.Description)
+	case providers.PalmPay:
+		client := settings.PalmPayClient()
+		payOK, providerRef, payErr = client.ProcessTransfer(req.Amount, req.BankCode, req.AccountNumber, req.Description)
+	default:
+		client := settings.FlutterwaveClient()
+		payOK, providerRef, payErr = client.ProcessTransfer(req.Amount, req.Currency, req.BankCode, req.AccountNumber, req.Description)
+	}
+	if !payOK || payErr != nil {
+		_ = walletPkg.FundWallet(userID, req.Amount+fee, req.Currency, "refund", ref+"-RFND", "Refund failed bank transfer: "+ref)
+		msg := "Bank transfer provider failed"
+		if payErr != nil {
+			msg = payErr.Error()
+		}
+		activity.Error("transfer", "provider_failed", msg, activity.UID(userID), ref, r.RemoteAddr)
+		_ = email.SendWithdrawalFailed(pinUser.Email, pinUser.FirstName, ref, msg, req.Amount, req.Currency)
+		response.Error(w, http.StatusBadGateway, msg)
+		return
+	}
+	if providerRef == "" {
+		providerRef = ref
+	}
+
 	activity.Success("transfer", "bank_sent", "Bank transfer "+ref, activity.UID(userID), ref, r.RemoteAddr)
 
 	_ = email.SendWithdrawalInitiated(
@@ -150,33 +181,6 @@ func CreateBankTransferHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf("You sent %s %.2f to %s (%s)", req.Currency, req.Amount, accountMasked, ref),
 		map[string]string{"type": "transfer", "reference": ref},
 	)
-
-	payoutProvider := providers.ForPayout(req.Currency, settings.NGNBankProvider())
-	var providerRef string
-	switch payoutProvider {
-	case providers.OnePipe:
-		client := settings.OnePipeClient()
-		ok, pRef, _ := client.ProcessTransfer(req.Amount, req.BankCode, req.AccountNumber, req.Description)
-		if ok {
-			providerRef = pRef
-		}
-	case providers.PalmPay:
-		// Future NGN rail — only reached when Admin sets ngn_bank_provider=palmpay.
-		client := settings.PalmPayClient()
-		ok, pRef, _ := client.ProcessTransfer(req.Amount, req.BankCode, req.AccountNumber, req.Description)
-		if ok {
-			providerRef = pRef
-		}
-	default:
-		client := settings.FlutterwaveClient()
-		ok, pRef, _ := client.ProcessTransfer(req.Amount, req.Currency, req.BankCode, req.AccountNumber, req.Description)
-		if ok {
-			providerRef = pRef
-		}
-	}
-	if providerRef == "" {
-		providerRef = ref
-	}
 
 	txn := models.Transaction{
 		UserID:            userID,
@@ -193,20 +197,18 @@ func CreateBankTransferHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	database.DB.Create(&txn)
 
-	if txn.Status == "successful" {
-		_ = email.SendWithdrawalCompleted(
-			pinUser.Email, pinUser.FirstName, bankName, accountMasked, ref,
-			req.Amount, req.Currency, time.Now(),
-		)
-	}
+	_ = email.SendWithdrawalCompleted(
+		pinUser.Email, pinUser.FirstName, bankName, accountMasked, ref,
+		req.Amount, req.Currency, time.Now(),
+	)
 
 	response.Success(w, http.StatusOK, map[string]interface{}{
-		"message":    "Transfer initiated successfully",
-		"reference":  ref,
-		"amount":     req.Amount,
-		"fee":        fee,
-		"status":     "successful",
-		"account":    req.AccountNumber,
+		"message":      "Transfer initiated successfully",
+		"reference":    ref,
+		"amount":       req.Amount,
+		"fee":          fee,
+		"status":       "successful",
+		"account":      req.AccountNumber,
 		"account_name": req.AccountName,
 	})
 }
@@ -269,12 +271,14 @@ func BulkTransferHandler(w http.ResponseWriter, r *http.Request) {
 		totalAmount += r.Amount + fee
 	}
 
-	// Debit total in one shot
+	// Debit total, then live payouts. Any provider failure refunds that leg (no silent mock).
 	batchRef := "BULK-" + time.Now().Format("20060102150405")
 	if err := walletPkg.DebitWallet(userID, totalAmount, 0, req.Currency, "bulk_transfer", batchRef, "Bulk salary disbursement"); err != nil {
 		response.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
+
+	payoutProvider := providers.ForPayout(req.Currency, settings.NGNBankProvider())
 
 	type Result struct {
 		AccountNumber string  `json:"account_number"`
@@ -282,11 +286,40 @@ func BulkTransferHandler(w http.ResponseWriter, r *http.Request) {
 		Amount        float64 `json:"amount"`
 		Reference     string  `json:"reference"`
 		Status        string  `json:"status"`
+		Error         string  `json:"error,omitempty"`
 	}
 
 	results := make([]Result, 0, len(req.Recipients))
-	for _, rec := range req.Recipients {
-		ref := "TRF-" + time.Now().Format("20060102150405.999999999")
+	successCount := 0
+	for i, rec := range req.Recipients {
+		ref := fmt.Sprintf("%s-%d", batchRef, i+1)
+		var payOK bool
+		var pRef string
+		var payErr error
+		switch payoutProvider {
+		case providers.OnePipe:
+			payOK, pRef, payErr = settings.OnePipeClient().ProcessTransfer(rec.Amount, rec.BankCode, rec.AccountNumber, rec.Description)
+		case providers.PalmPay:
+			payOK, pRef, payErr = settings.PalmPayClient().ProcessTransfer(rec.Amount, rec.BankCode, rec.AccountNumber, rec.Description)
+		default:
+			payOK, pRef, payErr = settings.FlutterwaveClient().ProcessTransfer(rec.Amount, req.Currency, rec.BankCode, rec.AccountNumber, rec.Description)
+		}
+		status := "successful"
+		errMsg := ""
+		if !payOK || payErr != nil {
+			status = "failed"
+			if payErr != nil {
+				errMsg = payErr.Error()
+			} else {
+				errMsg = "provider rejected transfer"
+			}
+			_ = walletPkg.FundWallet(userID, rec.Amount+fee, req.Currency, "refund", ref+"-RFND", "Refund failed bulk leg: "+ref)
+		} else {
+			successCount++
+		}
+		if pRef == "" {
+			pRef = ref
+		}
 		txn := models.Transaction{
 			UserID:            userID,
 			Reference:         ref,
@@ -294,9 +327,9 @@ func BulkTransferHandler(w http.ResponseWriter, r *http.Request) {
 			Fee:               fee,
 			Currency:          req.Currency,
 			Type:              "bank_transfer",
-			Status:            "successful",
-			Provider:          "onepipe",
-			ProviderReference: ref,
+			Status:            status,
+			Provider:          payoutProvider,
+			ProviderReference: pRef,
 			Customer:          rec.AccountNumber,
 			Description:       rec.Description,
 		}
@@ -306,16 +339,23 @@ func BulkTransferHandler(w http.ResponseWriter, r *http.Request) {
 			AccountName:   rec.AccountName,
 			Amount:        rec.Amount,
 			Reference:     ref,
-			Status:        "successful",
+			Status:        status,
+			Error:         errMsg,
 		})
 	}
 
+	if successCount == 0 {
+		response.Error(w, http.StatusBadGateway, "All bulk transfers failed — money refunded. Check provider keys (see key-get.md).")
+		return
+	}
+
 	response.Success(w, http.StatusOK, map[string]interface{}{
-		"message":       "Bulk transfer processed successfully",
-		"batch_ref":     batchRef,
-		"total_sent":    len(results),
-		"total_amount":  totalAmount,
-		"results":       results,
+		"message":      "Bulk transfer processed",
+		"batch_ref":    batchRef,
+		"total_sent":   successCount,
+		"total_failed": len(results) - successCount,
+		"total_amount": totalAmount,
+		"results":      results,
 	})
 }
 

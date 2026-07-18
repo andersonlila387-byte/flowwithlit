@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"flowwithlit/internal/database"
+	"flowwithlit/internal/integration/circle"
 	"flowwithlit/internal/integration/flutterwave"
 	"flowwithlit/internal/integration/onepipe"
 	"flowwithlit/internal/integration/palmpay"
@@ -78,6 +79,15 @@ func PalmPayClient() *palmpay.Client {
 		strings.TrimSpace(Get("palmpay_api_key")),
 		strings.TrimSpace(Get("palmpay_secret")),
 		strings.TrimSpace(Get("palmpay_merchant_id")),
+		"",
+	)
+}
+
+// CircleClient builds a Circle client for USDC/crypto rails.
+// Keys: Admin circle_api_key (or env CIRCLE_API_KEY). See key-get.md.
+func CircleClient() *circle.Client {
+	return circle.NewClient(
+		envOrSetting("circle_api_key", "CIRCLE_API_KEY"),
 		"",
 	)
 }

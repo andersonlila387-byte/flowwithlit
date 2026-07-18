@@ -2,10 +2,8 @@ package card
 
 import (
 	"encoding/json"
-	"math/rand"
 	"net/http"
 	"strconv"
-	"time"
 
 	"flowwithlit/internal/database"
 	"flowwithlit/internal/models"
@@ -67,38 +65,10 @@ func CreateCardHandler(w http.ResponseWriter, r *http.Request) {
 		req.Limit = 2000
 	}
 
-	// Generate fake card details (in prod: integrate with card issuer)
-	last4 := strconv.Itoa(1000 + rand.Intn(8999))
-	expMonth := 12
-	expYear := time.Now().Year() + 3
-
-	card := models.VirtualCard{
-		UserID:      userID,
-		Last4:       last4,
-		CardNumber:  "4111 1111 1111 " + last4, // test number
-		ExpiryMonth: expMonth,
-		ExpiryYear:  expYear,
-		CVV:         "123", // placeholder
-		Type:        req.Type,
-		Currency:    req.Currency,
-		Balance:     0,
-		Status:      "active",
-		DailyLimit:  req.Limit,
-	}
-
-	if err := database.DB.Create(&card).Error; err != nil {
-		response.Error(w, http.StatusInternalServerError, "Failed to create card")
-		return
-	}
-
-	// Return masked version
-	card.CardNumber = ""
-	card.CVV = ""
-
-	response.Success(w, http.StatusOK, map[string]interface{}{
-		"message": "Virtual card created",
-		"card":    card,
-	})
+	// No mock card numbers — wire a real issuer (e.g. Flutterwave Issuing) before go-live.
+	_ = userID
+	response.Error(w, http.StatusServiceUnavailable,
+		"Virtual card issuer not configured — complete card issuing API wiring (Flutterwave Issuing or similar). See key-get.md")
 }
 
 // FundCardRequest

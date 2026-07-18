@@ -3,7 +3,6 @@ package bills
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -35,10 +34,10 @@ func CategoriesHandler(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		"mode": map[string]string{
-			"telecom": ternary(vtuClient.Configured(), "live_sme", ternary(fw.Configured(), "live_flw", "mock")),
-			"utility": ternary(fw.Configured(), "live_flw", "mock"),
+			"telecom": ternary(vtuClient.Configured(), "live_sme", ternary(fw.Configured(), "live_flw", "not_configured")),
+			"utility": ternary(fw.Configured(), "live_flw", "not_configured"),
 		},
-		"note": "SME/gifting: Admin VTU keys (or env). Else Flutterwave. Else mock (wallet debited, no real top-up).",
+		"note": "No mock. Configure VTU (SME/gifting) and/or Flutterwave in Admin → Settings. See key-get.md.",
 	})
 }
 
@@ -159,33 +158,33 @@ func PurchaseHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Provider order for airtime/data:
-	// 1) VTU/SME aggregator (cheaper SME + gifting) when VTU_API_KEY set
-	// 2) Flutterwave bills when secret key set
-	// 3) Mock (free UI testing — wallet still debited)
-	providerRef := ""
-	status := "successful"
-	mode := "mock"
-	providerName := "mock"
+	// Provider order for airtime/data (no mock):
+	// 1) VTU/SME aggregator when configured
+	// 2) Flutterwave bills when configured
+	// Else: fail before debit... we already debited — refund if no provider.
 	vtuClient := settings.VTUClient()
 	fw := settings.FlutterwaveClient()
-
 	isTelecom := product.CategoryID == "airtime" || product.CategoryID == "data"
+
 	var payErr error
 	var okPay bool
 	var pRef string
+	mode := ""
+	providerName := ""
 
 	if isTelecom && vtuClient.Configured() {
-		mode = "live_sme"
-		providerName = "vtu"
+		mode, providerName = "live_sme", "vtu"
 		okPay, pRef, payErr = vtuClient.PayDataOrAirtime(product.CategoryID, product.ID, customer, amount, ref)
 	} else if fw.Configured() {
-		mode = "live"
-		providerName = "flutterwave"
+		mode, providerName = "live", "flutterwave"
 		okPay, pRef, payErr = fw.PayBill(product.CategoryID, product.BillerCode, product.ItemCode, customer, amount, currency, ref)
 	} else {
-		log.Printf("[Bills Mock] %s amount=%.2f customer=%s ref=%s", product.ID, amount, customer, ref)
-		okPay, pRef = true, "MOCK-"+ref
+		// Refund debit — no silent mock success
+		_ = walletPkg.FundWallet(userID, amount, currency, "refund", ref+"-RFND", "Refund: no bill provider configured")
+		activity.Error("bill", "no_provider", "No VTU or Flutterwave keys configured", activity.UID(userID), ref, r.RemoteAddr)
+		response.Error(w, http.StatusServiceUnavailable,
+			"No bill provider configured. Add VTU keys (SME/gifting) and/or Flutterwave secret in Admin → Settings. See key-get.md")
+		return
 	}
 
 	if !okPay || payErr != nil {
@@ -198,9 +197,9 @@ func PurchaseHandler(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadGateway, msg)
 		return
 	}
-	providerRef = pRef
+
 	database.DB.Model(&models.Transaction{}).Where("reference = ?", ref).Updates(map[string]interface{}{
-		"provider_reference": providerRef,
+		"provider_reference": pRef,
 		"provider":           providerName,
 		"type":               "bill_payment",
 	})
@@ -208,17 +207,15 @@ func PurchaseHandler(w http.ResponseWriter, r *http.Request) {
 	activity.Success("bill", "purchase_ok", desc+" ["+mode+"]", activity.UID(userID), ref, r.RemoteAddr)
 
 	msg := "Bill paid successfully"
-	if mode == "mock" {
-		msg = "Mock bill paid (wallet debited). Set VTU_API_KEY for cheap SME/gifting or Flutterwave keys for retail bills."
-	} else if mode == "live_sme" {
-		msg = "Paid via SME/gifting VTU provider (cheaper data path)."
+	if mode == "live_sme" {
+		msg = "Paid via SME/gifting VTU provider"
 	}
 
 	response.Success(w, http.StatusOK, map[string]interface{}{
 		"reference":          ref,
-		"provider_reference": providerRef,
+		"provider_reference": pRef,
 		"provider":           providerName,
-		"status":             status,
+		"status":             "successful",
 		"mode":               mode,
 		"product":            product,
 		"customer":           customer,

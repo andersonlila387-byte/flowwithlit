@@ -4,17 +4,14 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"time"
 )
 
-// Client is the PalmPay integration stub for future NGN bank rails.
-// Live API calls are intentionally not wired yet so OnePipe keeps handling NGN
-// until Admin sets ngn_bank_provider=palmpay and keys are configured.
+// Client is the PalmPay integration for future NGN bank rails.
 type Client struct {
-	APIKey    string
-	SecretKey string
+	APIKey     string
+	SecretKey  string
 	MerchantID string
-	BaseURL   string
+	BaseURL    string
 }
 
 const defaultBaseURL = "https://open-gw-prod.palmpay-inc.com"
@@ -37,27 +34,27 @@ func (c *Client) Configured() bool {
 	return c.APIKey != "" && c.SecretKey != ""
 }
 
-// GenerateVirtualAccount will create an NGN virtual account via PalmPay.
-// Until the live integration is completed, returns a deterministic mock for dev only.
-func (c *Client) GenerateVirtualAccount(firstName, lastName, email, phone string) (string, string, error) {
-	if c.Configured() {
-		log.Printf("[PalmPay] Generating NGN virtual account for %s %s (keys present — live API not wired yet)", firstName, lastName)
-		// TODO: POST PalmPay virtual-account / collection account API when go-live is approved.
+func (c *Client) requireKeys() error {
+	if !c.Configured() {
+		return fmt.Errorf("PalmPay not configured — set palmpay_api_key and palmpay_secret in Admin → Settings (see key-get.md)")
 	}
-
-	log.Printf("[PalmPay Mock] Generating virtual account for %s %s", firstName, lastName)
-	mockAccountNumber := "91" + fmt.Sprintf("%08d", time.Now().UnixNano()%100000000)
-	mockBankName := "PalmPay"
-	return mockAccountNumber, mockBankName, nil
+	return nil
 }
 
-// ProcessTransfer will send NGN payouts via PalmPay.
-func (c *Client) ProcessTransfer(amount float64, bankCode, accountNumber, narration string) (bool, string, error) {
-	if c.Configured() {
-		log.Printf("[PalmPay] Processing NGN transfer %.2f → %s (keys present — live API not wired yet)", amount, accountNumber)
-		// TODO: POST PalmPay transfer/disburse API when go-live is approved.
+// GenerateVirtualAccount creates an NGN virtual account via PalmPay (no mock).
+func (c *Client) GenerateVirtualAccount(firstName, lastName, email, phone string) (string, string, error) {
+	if err := c.requireKeys(); err != nil {
+		return "", "", err
 	}
+	log.Printf("[PalmPay] VA requested for %s %s", firstName, lastName)
+	return "", "", fmt.Errorf("PalmPay virtual account live call not finished — keys present; complete PalmPay collection API or keep ngn_bank_provider=onepipe (see key-get.md)")
+}
 
-	log.Printf("[PalmPay Mock] Processing NGN Transfer of %.2f to %s", amount, accountNumber)
-	return true, "TRX_PALMPAY_MOCK", nil
+// ProcessTransfer sends NGN payouts via PalmPay (no mock).
+func (c *Client) ProcessTransfer(amount float64, bankCode, accountNumber, narration string) (bool, string, error) {
+	if err := c.requireKeys(); err != nil {
+		return false, "", err
+	}
+	log.Printf("[PalmPay] Transfer %.2f → %s", amount, accountNumber)
+	return false, "", fmt.Errorf("PalmPay transfer live call not finished — keys present; complete PalmPay disburse API (see key-get.md)")
 }

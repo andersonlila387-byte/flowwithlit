@@ -211,7 +211,7 @@ func main() {
 		r.With(myMiddleware.RateLimit(5, 1*time.Minute)).Post("/funding/crypto-withdraw", wallet.WithdrawCryptoHandler)
 
 		// Bills / everyday bank services (airtime, data, electricity, cable)
-		// Soft: mock when Flutterwave not configured; live when keys set in Admin.
+		// No mock: requires VTU and/or Flutterwave keys (see key-get.md).
 		r.Get("/bills/categories", bills.CategoriesHandler)
 		r.Get("/bills/products", bills.ProductsHandler)
 		r.Get("/bills/history", bills.HistoryHandler)

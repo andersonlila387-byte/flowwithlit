@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"time"
 )
 
 const defaultBaseURL = "https://api.onepipe.io/v2"
@@ -33,27 +32,30 @@ func (c *Client) Configured() bool {
 	return c.APIKey != "" && c.SecretKey != ""
 }
 
-// GenerateVirtualAccount requests a dedicated NGN virtual account.
-// Uses live API when keys are configured; otherwise returns a deterministic mock for dev.
-func (c *Client) GenerateVirtualAccount(firstName, lastName, email, phone string) (string, string, error) {
-	if c.Configured() {
-		log.Printf("[OnePipe] Generating NGN virtual account for %s %s (live keys configured)", firstName, lastName)
-		// TODO: POST {BaseURL}/virtual-accounts when OnePipe keys are active
+func (c *Client) requireKeys() error {
+	if !c.Configured() {
+		return fmt.Errorf("OnePipe not configured — set onepipe_api_key and onepipe_secret in Admin → Settings (see key-get.md)")
 	}
+	return nil
+}
 
-	log.Printf("[OnePipe] Generating virtual account for %s %s", firstName, lastName)
-	mockAccountNumber := "82" + fmt.Sprintf("%08d", time.Now().UnixNano()%100000000)
-	mockBankName := "Providus Bank"
-	return mockAccountNumber, mockBankName, nil
+// GenerateVirtualAccount requests a dedicated NGN virtual account.
+// No mock: fails clearly if keys missing or live call not ready.
+func (c *Client) GenerateVirtualAccount(firstName, lastName, email, phone string) (string, string, error) {
+	if err := c.requireKeys(); err != nil {
+		return "", "", err
+	}
+	log.Printf("[OnePipe] VA requested for %s %s email=%s — live HTTP virtual-accounts call must match your OnePipe contract", firstName, lastName, email)
+	// Live HTTP integration depends on your OnePipe product plan / endpoints.
+	// Prefer failing loudly over fake account numbers that break deposits.
+	return "", "", fmt.Errorf("OnePipe virtual account live call not finished for this deployment — keys are present; complete OnePipe VA API wiring or use a working NGN rail (see key-get.md)")
 }
 
 // ProcessTransfer sends NGN from Flowwithlit to an external Nigerian bank account.
 func (c *Client) ProcessTransfer(amount float64, bankCode, accountNumber, narration string) (bool, string, error) {
-	if c.Configured() {
-		log.Printf("[OnePipe] Processing NGN transfer %.2f → %s (live keys configured)", amount, accountNumber)
-		// TODO: POST {BaseURL}/transfers when OnePipe keys are active
+	if err := c.requireKeys(); err != nil {
+		return false, "", err
 	}
-
-	log.Printf("[OnePipe Mock] Processing NGN Transfer of %.2f to %s", amount, accountNumber)
-	return true, "TRX_MOCK_SUCCESS", nil
+	log.Printf("[OnePipe] Transfer %.2f → %s bank=%s", amount, accountNumber, bankCode)
+	return false, "", fmt.Errorf("OnePipe transfer live call not finished for this deployment — keys are present; complete OnePipe transfer API wiring (see key-get.md)")
 }

@@ -1,8 +1,8 @@
 package bills
 
 // Catalog of everyday bank-style bill services for Nigeria.
-// Live fulfillment goes through Flutterwave when keys are configured;
-// otherwise the API returns mock success so mobile can build UI for free.
+// Live fulfillment: VTU (SME/gifting) first for airtime/data, else Flutterwave.
+// No mock success — missing keys return clear errors (see key-get.md).
 
 type Category struct {
 	ID          string `json:"id"`

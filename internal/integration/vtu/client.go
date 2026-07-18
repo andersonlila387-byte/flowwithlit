@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -14,7 +13,7 @@ import (
 
 // Client talks to a cheap SME/gifting VTU aggregator (VTPass-style).
 // Configure via Admin settings or env (VTU_API_KEY, VTU_SECRET_KEY, VTU_PUBLIC_KEY, VTU_BASE_URL).
-// When not configured, Pay returns mock success so mobile UI can develop free.
+// When not configured, Pay returns a clear error (no mock success).
 type Client struct {
 	APIKey    string
 	SecretKey string
@@ -57,8 +56,7 @@ func (c *Client) Configured() bool {
 // productCode maps to provider serviceID/variation (catalog product id).
 func (c *Client) PayDataOrAirtime(category, productCode, phone string, amount float64, requestID string) (bool, string, error) {
 	if !c.Configured() {
-		log.Printf("[VTU Mock] %s product=%s phone=%s amount=%.2f ref=%s", category, productCode, phone, amount, requestID)
-		return true, "VTU_MOCK_" + requestID, nil
+		return false, "", fmt.Errorf("VTU/SME not configured — set vtu_api_key in Admin → Settings (see key-get.md)")
 	}
 
 	// VTPass-compatible shape (common in NG SME/gifting). Adjust if you use ClubKonnect etc.

@@ -1,9 +1,8 @@
 package wallet
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,9 +10,9 @@ import (
 
 	"flowwithlit/internal/bankrails"
 	"flowwithlit/internal/database"
-	"flowwithlit/internal/integration/circle"
 	"flowwithlit/internal/models"
 	"flowwithlit/internal/rates"
+	"flowwithlit/internal/settings"
 	"flowwithlit/pkg/middleware"
 	"flowwithlit/pkg/response"
 )
@@ -178,39 +177,9 @@ var cryptoNetworkByAsset = map[string]string{
 	"SOL":  "Solana",
 }
 
-func mockCryptoAddress(asset string) string {
-	switch strings.ToUpper(asset) {
-	case "BTC":
-		return "bc1q" + randomHex(20)
-	case "ETH", "USDC":
-		return "0x" + randomHex(20)
-	case "SOL":
-		return randomBase58Like(32)
-	default: // USDT (TRC20) and anything else — reuse the existing Circle mock generator
-		addr, _ := circle.NewClient("", "").GenerateWalletAddress("TRC20")
-		return addr
-	}
-}
-
-func randomHex(n int) string {
-	b := make([]byte, n)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
-}
-
-func randomBase58Like(n int) string {
-	const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-	b := make([]byte, n)
-	_, _ = rand.Read(b)
-	out := make([]byte, n)
-	for i, v := range b {
-		out[i] = alphabet[int(v)%len(alphabet)]
-	}
-	return string(out)
-}
-
 // EnsureDefaultCryptoAddress creates the user's default USDT receiving address if
 // they don't have one yet. Called at KYC-approval time and as a lazy fallback.
+// No mock addresses — requires Circle keys (see key-get.md).
 func EnsureDefaultCryptoAddress(userID uint) (*models.CryptoDepositAddress, error) {
 	return ensureCryptoAddress(userID, "USDT")
 }
@@ -223,11 +192,22 @@ func ensureCryptoAddress(userID uint, asset string) (*models.CryptoDepositAddres
 	}
 
 	network := cryptoNetworkByAsset[asset]
+	if network == "" {
+		network = asset
+	}
+	client := settings.CircleClient()
+	address, err := client.GenerateWalletAddress(network)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(address) == "" {
+		return nil, fmt.Errorf("Circle returned empty address for %s (see key-get.md)", asset)
+	}
 	addr := models.CryptoDepositAddress{
 		UserID:  userID,
 		Asset:   asset,
 		Network: network,
-		Address: mockCryptoAddress(asset),
+		Address: address,
 	}
 	if err := database.DB.Create(&addr).Error; err != nil {
 		return nil, err
@@ -308,11 +288,8 @@ type withdrawCryptoRequest struct {
 	PIN                string  `json:"pin"`
 }
 
-// WithdrawCryptoHandler lets a user withdraw as a non-settlement asset (e.g. BTC)
-// even though their resting balance is tracked in USDT: it converts the requested
-// asset amount to its USDT equivalent, debits that from the real USDT wallet, and
-// mocks the actual on-chain send — same "real ledger movement, mocked external
-// transfer" pattern as bank transfers elsewhere in this codebase.
+// WithdrawCryptoHandler converts asset amount to USDT ledger debit then calls Circle
+// for on-chain send. No mock: missing keys or unfinished Circle API → refund + clear error.
 func WithdrawCryptoHandler(w http.ResponseWriter, r *http.Request) {
 	userID, ok := r.Context().Value(middleware.UserIDKey).(uint)
 	if !ok {
@@ -356,24 +333,40 @@ func WithdrawCryptoHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ref := "CWD-" + strconv.FormatInt(time.Now().UnixNano(), 10)
-	if err := DebitWallet(userID, usdtAmount, 0, "USDT", "internal", ref, "Crypto withdrawal ("+asset+")"); err != nil {
+	if err := DebitWallet(userID, usdtAmount, 0, "USDT", "circle", ref, "Crypto withdrawal ("+asset+")"); err != nil {
 		response.Error(w, http.StatusBadRequest, err.Error())
 		return
+	}
+
+	client := settings.CircleClient()
+	okPay, pRef, payErr := client.ProcessWithdrawal(asset, strings.TrimSpace(req.DestinationAddress), req.Amount)
+	if !okPay || payErr != nil {
+		_ = FundWallet(userID, usdtAmount, "USDT", "refund", ref+"-RFND", "Refund failed crypto withdrawal: "+ref)
+		msg := "Crypto withdrawal provider failed"
+		if payErr != nil {
+			msg = payErr.Error()
+		}
+		response.Error(w, http.StatusBadGateway, msg)
+		return
+	}
+	if pRef == "" {
+		pRef = ref
 	}
 
 	var usdtWallet models.Wallet
 	database.DB.Where("user_id = ? AND currency = ?", userID, "USDT").First(&usdtWallet)
 
 	database.DB.Create(&models.Transaction{
-		UserID:       userID,
-		Reference:    ref,
-		Amount:       req.Amount,
-		BalanceAfter: usdtWallet.Balance,
-		Currency:     asset,
-		Type:         "crypto_withdrawal",
-		Status:       "successful",
-		Provider:     "internal",
-		Description:  "Withdrew " + strconv.FormatFloat(req.Amount, 'f', -1, 64) + " " + asset + " to " + req.DestinationAddress,
+		UserID:            userID,
+		Reference:         ref,
+		Amount:            req.Amount,
+		BalanceAfter:      usdtWallet.Balance,
+		Currency:          asset,
+		Type:              "crypto_withdrawal",
+		Status:            "successful",
+		Provider:          "circle",
+		ProviderReference: pRef,
+		Description:       "Withdrew " + strconv.FormatFloat(req.Amount, 'f', -1, 64) + " " + asset + " to " + req.DestinationAddress,
 	})
 
 	response.Success(w, http.StatusOK, map[string]interface{}{
