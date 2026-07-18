@@ -9,8 +9,10 @@ import (
 
 	"flowwithlit/internal/admin"
 	"flowwithlit/internal/auth"
+	"flowwithlit/internal/bills"
 	"flowwithlit/internal/card"
 	"flowwithlit/internal/chatbot"
+	"flowwithlit/internal/family"
 	"flowwithlit/internal/checkout"
 	"flowwithlit/internal/commerce"
 	"flowwithlit/internal/company"
@@ -105,6 +107,10 @@ func main() {
 		// Credential-guessing / spam surfaces — capped per IP so brute-forcing a
 		// password, a 2FA code, or a password-reset code isn't just a for-loop away.
 		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/register", auth.RegisterHandler)
+		// Mobile-first register (DOB + age gate) + phone OTP (not the same as web email-only)
+		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/mobile/register", auth.MobileRegisterHandler)
+		r.With(myMiddleware.RateLimit(5, 1*time.Minute)).Post("/mobile/send-phone-otp", auth.SendPhoneOTPHandler)
+		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/mobile/verify-phone-otp", auth.VerifyPhoneOTPHandler)
 		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/login", auth.LoginHandler)
 		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/login-2fa", auth.Login2FAHandler)
 		// New-device email OTP (after password / 2FA) — tight rate limits to stop code guessing
@@ -147,6 +153,16 @@ func main() {
 		r.Post("/push/register", user.RegisterPushHandler)
 		r.Post("/push/unregister", user.UnregisterPushHandler)
 		r.Get("/push/status", user.PushStatusHandler)
+
+		// Family / kids sub-accounts (child's name; parent KYC + spend controls)
+		r.Get("/family/juniors", family.ListJuniorsHandler)
+		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/family/juniors", family.CreateJuniorHandler)
+		r.Put("/family/juniors/{id}", family.UpdateJuniorHandler)
+		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/family/juniors/{id}/fund", family.FundJuniorHandler)
+
+		// Phone OTP also available when already logged in (mobile settings)
+		r.With(myMiddleware.RateLimit(5, 1*time.Minute)).Post("/mobile/send-phone-otp", auth.SendPhoneOTPHandler)
+		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/mobile/verify-phone-otp", auth.VerifyPhoneOTPHandler)
 
 		r.Get("/notifications", user.GetNotificationsHandler)
 		r.Get("/notifications/pending-broadcast", user.GetPendingBroadcastModalHandler)
@@ -193,6 +209,13 @@ func main() {
 		r.Get("/funding/crypto-addresses", wallet.GetCryptoAddressesHandler)
 		r.Post("/funding/crypto-addresses", wallet.CreateCryptoAddressHandler)
 		r.With(myMiddleware.RateLimit(5, 1*time.Minute)).Post("/funding/crypto-withdraw", wallet.WithdrawCryptoHandler)
+
+		// Bills / everyday bank services (airtime, data, electricity, cable)
+		// Soft: mock when Flutterwave not configured; live when keys set in Admin.
+		r.Get("/bills/categories", bills.CategoriesHandler)
+		r.Get("/bills/products", bills.ProductsHandler)
+		r.Get("/bills/history", bills.HistoryHandler)
+		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/bills/purchase", bills.PurchaseHandler)
 
 		// Transfers (bank + history)
 		r.Get("/transfers/banks", transfer.BanksHandler)
@@ -306,6 +329,8 @@ func main() {
 		r.With(admin.RequireAdminAuth).Post("/disputes/update", admin.UpdateDisputeHandler)
 
 		r.With(admin.RequireAdminAuth).Get("/webhook-logs", admin.GetWebhookLogsHandler)
+		// Unified ops monitor — activity trail + health counters
+		r.With(admin.RequireAdminAuth).Get("/activity", admin.GetActivityHandler)
 
 		r.With(admin.RequireAdminAuth).Get("/tickets", admin.GetTicketsHandler)
 		r.With(admin.RequireAdminAuth).Post("/tickets/reply", admin.ReplyTicketHandler)

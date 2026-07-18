@@ -227,6 +227,87 @@ func (c *Client) ProcessTransfer(amount float64, currency, bankCode, accountNumb
 	return true, "FLW_MOCK_" + fmt.Sprintf("%d", time.Now().Unix()), nil
 }
 
+// PayBill purchases airtime/data/electricity/cable via Flutterwave Bill Payments.
+// Soft path: when keys are missing, caller should mock. When keys exist, posts bill payment.
+// productCategory: airtime | data | electricity | cable
+func (c *Client) PayBill(category, billerCode, itemCode, customer string, amount float64, currency, reference string) (bool, string, error) {
+	if !c.Configured() {
+		return false, "", fmt.Errorf("Flutterwave secret key not configured")
+	}
+	category = strings.ToLower(strings.TrimSpace(category))
+	customer = strings.TrimSpace(customer)
+	if customer == "" || amount <= 0 {
+		return false, "", fmt.Errorf("customer and amount are required")
+	}
+
+	// Flutterwave bill payment shapes vary by product. We use the common v3 bills endpoint.
+	// Docs: POST /v3/bills
+	body := map[string]interface{}{
+		"country":    "NG",
+		"customer":   customer,
+		"amount":     amount,
+		"type":       categoryToFLWType(category, billerCode),
+		"reference":  reference,
+		"recursion":  false,
+	}
+	if billerCode != "" {
+		body["biller_name"] = billerCode
+	}
+
+	log.Printf("[Flutterwave] Bill pay category=%s customer=%s amount=%.2f ref=%s", category, customer, amount, reference)
+	data, code, err := c.authRequest(http.MethodPost, "/bills", body)
+	if err != nil {
+		return false, "", err
+	}
+	if code < 200 || code >= 300 {
+		// Soft fallback: do not hard-fail integration if FLW bill path differs by account —
+		// log body for ops and return error so wallet can refund.
+		return false, "", fmt.Errorf("Flutterwave bill HTTP %d: %s", code, strings.TrimSpace(string(data)))
+	}
+
+	var out struct {
+		Status  string `json:"status"`
+		Message string `json:"message"`
+		Data    struct {
+			Reference string `json:"reference"`
+			FlwRef    string `json:"flw_ref"`
+			TxRef     string `json:"tx_ref"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(data, &out)
+	refOut := out.Data.FlwRef
+	if refOut == "" {
+		refOut = out.Data.Reference
+	}
+	if refOut == "" {
+		refOut = out.Data.TxRef
+	}
+	if refOut == "" {
+		refOut = reference
+	}
+	ok := strings.EqualFold(out.Status, "success")
+	return ok, refOut, nil
+}
+
+func categoryToFLWType(category, billerCode string) string {
+	// Prefer explicit biller when present; else generic labels Flutterwave accepts for NG.
+	if strings.TrimSpace(billerCode) != "" {
+		return billerCode
+	}
+	switch strings.ToLower(category) {
+	case "airtime":
+		return "AIRTIME"
+	case "data":
+		return "DATA"
+	case "electricity":
+		return "ELECTRICITY"
+	case "cable":
+		return "CABLEBILLS"
+	default:
+		return strings.ToUpper(category)
+	}
+}
+
 // VerifyBVN performs KYC BVN verification for Nigerian customers via Flutterwave.
 func (c *Client) VerifyBVN(bvn string) (bool, error) {
 	if !c.Configured() {

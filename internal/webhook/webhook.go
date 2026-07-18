@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"flowwithlit/internal/activity"
 	"flowwithlit/internal/database"
 	"flowwithlit/internal/integration/smileid"
 	"flowwithlit/internal/models"
@@ -124,6 +125,7 @@ func OnePipeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if ok, enforced := softVerify("onepipe", secret, raw, sigCandidates...); !ok {
 		logWebhook("onepipe", "unknown", string(raw), "failed", "Invalid or missing signature", ip, time.Since(start).Milliseconds())
+		activity.Error("webhook", "onepipe_sig_failed", "Invalid or missing OnePipe signature", nil, "", ip)
 		http.Error(w, "Invalid signature", http.StatusUnauthorized)
 		return
 	} else if enforced {
@@ -141,12 +143,14 @@ func OnePipeHandler(w http.ResponseWriter, r *http.Request) {
 	if payload.Event == "transaction.successful" {
 		log.Printf("[Webhook] OnePipe deposit successful: %s %.2f into account %s\n", payload.Currency, payload.Amount, payload.AccountNumber)
 		logWebhook("onepipe", payload.Event, string(raw), "processed", "", ip, time.Since(start).Milliseconds())
+		activity.Success("webhook", "onepipe_deposit", "OnePipe deposit alert "+payload.Currency, nil, payload.TransactionID, ip)
 	} else {
 		event := payload.Event
 		if event == "" {
 			event = "received"
 		}
 		logWebhook("onepipe", event, string(raw), "received", "", ip, time.Since(start).Milliseconds())
+		activity.Info("webhook", "onepipe_"+event, "OnePipe event received", nil, payload.TransactionID, ip)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

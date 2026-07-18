@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"flowwithlit/internal/activity"
 	"flowwithlit/internal/database"
 	"flowwithlit/internal/models"
 	"flowwithlit/internal/providers"
@@ -109,7 +110,13 @@ func CreateBankTransferHandler(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusNotFound, "User not found")
 		return
 	}
+	// Kids sub-accounts: no external bank cash-out (parent controls money movement)
+	if pinUser.IsJunior() {
+		response.Error(w, http.StatusForbidden, "Kids accounts cannot send bank transfers. Parent controls withdrawals.")
+		return
+	}
 	if err := userPkg.VerifyDebitAuth(pinUser, req.PIN, req.PaymentToken); err != nil {
+		activity.Warning("transfer", "auth_failed", err.Error(), activity.UID(userID), "", r.RemoteAddr)
 		userPkg.WriteDebitAuthError(w, err)
 		return
 	}
@@ -126,10 +133,12 @@ func CreateBankTransferHandler(w http.ResponseWriter, r *http.Request) {
 	// Debit the user's wallet using the manager
 	err := walletPkg.DebitWallet(userID, req.Amount, fee, req.Currency, "bank", ref, req.Description+" to "+req.AccountNumber)
 	if err != nil {
+		activity.Error("transfer", "debit_failed", err.Error(), activity.UID(userID), ref, r.RemoteAddr)
 		_ = email.SendWithdrawalFailed(pinUser.Email, pinUser.FirstName, ref, err.Error(), req.Amount, req.Currency)
 		response.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	activity.Success("transfer", "bank_sent", "Bank transfer "+ref, activity.UID(userID), ref, r.RemoteAddr)
 
 	_ = email.SendWithdrawalInitiated(
 		pinUser.Email, pinUser.FirstName, bankName, accountMasked, ref,
