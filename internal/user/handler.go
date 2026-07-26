@@ -184,9 +184,11 @@ func MobileHomeHandler(w http.ResponseWriter, r *http.Request) {
 		nextID = next.ID
 	}
 
-	// Lightweight recent activity for home feed (faster than full transactions page)
+	// Lightweight recent LIVE activity only (never sandbox/test checkout rows)
 	var recent []models.Transaction
-	database.DB.Where("user_id = ?", userID).Order("created_at desc").Limit(8).Find(&recent)
+	database.DB.Where("user_id = ?", userID).
+		Where("NOT (is_test = ? OR provider = ?)", true, "test").
+		Order("created_at desc").Limit(8).Find(&recent)
 	if recent == nil {
 		recent = []models.Transaction{}
 	}

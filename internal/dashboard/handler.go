@@ -19,7 +19,9 @@ func MetricsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	env := envfilter.Parse(r)
-	balances := envfilter.BalancesForEnv(userID, env)
+	// Dashboard wallet tiles always show LIVE spendable balances (never sandbox/fake).
+	// Test env only filters activity/chart/escrows so sandbox checkout history is visible.
+	balances := envfilter.LiveBalances(userID)
 
 	// Today's revenue (successful only, env-scoped)
 	var todayRevenue float64
@@ -65,13 +67,19 @@ func MetricsHandler(w http.ResponseWriter, r *http.Request) {
 		chartData = append(chartData, dailyVolume)
 	}
 
-	response.Success(w, http.StatusOK, map[string]interface{}{
-		"env":              env,
-		"balances":         balances,
-		"today_revenue":    todayRevenue,
-		"escrows_pending":  escrowsPending,
-		"recent_activity":  recentActivity,
-		"chart_labels":     chartLabels,
-		"chart_data":       chartData,
-	})
+	out := map[string]interface{}{
+		"env":             env,
+		"balances":        balances, // always LIVE spendable
+		"spendable":       true,
+		"today_revenue":   todayRevenue,
+		"escrows_pending": escrowsPending,
+		"recent_activity": recentActivity,
+		"chart_labels":    chartLabels,
+		"chart_data":      chartData,
+	}
+	if env == "test" {
+		out["sandbox_balances"] = envfilter.SandboxBalances(userID)
+		out["sandbox_note"] = "Test payments are sandbox-only and never mix into your spendable wallet."
+	}
+	response.Success(w, http.StatusOK, out)
 }

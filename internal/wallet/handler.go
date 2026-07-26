@@ -43,21 +43,20 @@ func GetWalletsHandler(w http.ResponseWriter, r *http.Request) {
 		wallets = defaultWallets
 	}
 
+	// CRITICAL: never overwrite spendable Balance with sandbox/test totals.
+	// Transfers, vaults, bills, and mobile all debit Wallet.Balance (live only).
+	// Showing fake money as Balance caused users to try cashing out sandbox funds.
+	out := map[string]interface{}{
+		"env":       env,
+		"wallets":   wallets, // always real live balances
+		"spendable": true,
+	}
 	if env == "test" {
-		sandbox := envfilter.SandboxBalances(userID)
-		for i := range wallets {
-			if bal, ok := sandbox[wallets[i].Currency]; ok {
-				wallets[i].Balance = bal
-			} else {
-				wallets[i].Balance = 0
-			}
-		}
+		out["sandbox_balances"] = envfilter.SandboxBalances(userID)
+		out["sandbox_note"] = "Test/sandbox totals are for checkout testing only — not available to transfer or spend."
 	}
 
-	response.Success(w, http.StatusOK, map[string]interface{}{
-		"env":     env,
-		"wallets": wallets,
-	})
+	response.Success(w, http.StatusOK, out)
 }
 
 // GetBalancesHandler returns a summarized balances map (used by many pages)
@@ -69,12 +68,19 @@ func GetBalancesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	env := envfilter.Parse(r)
-	balances := envfilter.BalancesForEnv(userID, env)
+	// Spendable balances are always LIVE. Sandbox is returned separately in test mode.
+	live := envfilter.LiveBalances(userID)
+	out := map[string]interface{}{
+		"env":       env,
+		"balances":  live,
+		"spendable": true,
+	}
+	if env == "test" {
+		out["sandbox_balances"] = envfilter.SandboxBalances(userID)
+		out["sandbox_note"] = "Test/sandbox totals are for checkout testing only — not available to transfer or spend."
+	}
 
-	response.Success(w, http.StatusOK, map[string]interface{}{
-		"env":      env,
-		"balances": balances,
-	})
+	response.Success(w, http.StatusOK, out)
 }
 
 // SwapRequest payload

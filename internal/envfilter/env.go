@@ -86,24 +86,28 @@ func SandboxBalances(userID uint) map[string]float64 {
 	return balances
 }
 
-// LiveBalances returns wallet balances for the user's default settlement currencies.
+// LiveBalances returns real spendable wallet balances (all currencies).
+// Never includes sandbox/test checkout totals.
 func LiveBalances(userID uint) map[string]float64 {
 	fiatDef, cryptoDef := userSettlementDefaults(userID)
 	balances := map[string]float64{fiatDef: 0, cryptoDef: 0}
 
 	var wallets []models.Wallet
-	database.DB.Where("user_id = ? AND currency IN ?", userID, []string{fiatDef, cryptoDef}).Find(&wallets)
+	database.DB.Where("user_id = ?", userID).Find(&wallets)
 	for _, w := range wallets {
 		code := strings.ToUpper(strings.TrimSpace(w.Currency))
+		if code == "" {
+			continue
+		}
 		balances[code] = w.Balance
 	}
 	return balances
 }
 
-// BalancesForEnv picks wallet or sandbox totals based on active environment.
+// BalancesForEnv returns spendable LIVE balances for any env.
+// Sandbox totals are never mixed into spendable maps — use SandboxBalances separately.
+// Deprecated for wallet display: prefer LiveBalances + optional SandboxBalances.
 func BalancesForEnv(userID uint, env string) map[string]float64 {
-	if env == "test" {
-		return SandboxBalances(userID)
-	}
+	_ = env
 	return LiveBalances(userID)
 }

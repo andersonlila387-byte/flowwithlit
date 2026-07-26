@@ -30,8 +30,13 @@ func EnsureWallet(tx *gorm.DB, userID uint, currency string) (models.Wallet, err
 }
 
 // CreditWalletBalance adds funds without creating a ledger row (checkout already recorded).
+// isTest=true must NEVER touch live Wallet.Balance — sandbox is summed from is_test transactions only.
 func CreditWalletBalance(userID uint, amount float64, currency string, isTest bool, txnRef string) error {
 	if amount <= 0 {
+		return nil
+	}
+	if isTest {
+		// Hard rail: fake/sandbox money stays out of spendable wallets (web + mobile).
 		return nil
 	}
 	return database.DB.Transaction(func(tx *gorm.DB) error {
