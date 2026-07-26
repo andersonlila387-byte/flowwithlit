@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 
@@ -152,17 +153,18 @@ func BankStatusHandler(w http.ResponseWriter, r *http.Request) {
 // POST /public/charge
 func ChargeHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		PublicKey   string                 `json:"public_key"`
-		Amount      float64                `json:"amount"` // in kobo / lowest denomination
-		Currency    string                 `json:"currency"`
-		Email       string                 `json:"email"`
-		Name        string                 `json:"name"`
-		CardNumber  string                 `json:"card_number"`
-		ExpiryMonth string                 `json:"expiry_month"`
-		ExpiryYear  string                 `json:"expiry_year"`
-		CVV         string                 `json:"cvv"`
-		Ref         string                 `json:"ref"`
-		Meta        map[string]interface{} `json:"meta"`
+		PublicKey    string                 `json:"public_key"`
+		SessionToken string                 `json:"session_token"` // preferred: locks amount/currency/email server-side
+		Amount       float64                `json:"amount"`        // in kobo / lowest denomination — ignored when session_token is set
+		Currency     string                 `json:"currency"`
+		Email        string                 `json:"email"`
+		Name         string                 `json:"name"`
+		CardNumber   string                 `json:"card_number"`
+		ExpiryMonth  string                 `json:"expiry_month"`
+		ExpiryYear   string                 `json:"expiry_year"`
+		CVV          string                 `json:"cvv"`
+		Ref          string                 `json:"ref"`
+		Meta         map[string]interface{} `json:"meta"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -170,8 +172,12 @@ func ChargeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.PublicKey == "" || req.Amount <= 0 || req.Email == "" {
-		response.Error(w, http.StatusBadRequest, "public_key, amount, and email are required")
+	if req.PublicKey == "" || req.Email == "" {
+		response.Error(w, http.StatusBadRequest, "public_key and email are required")
+		return
+	}
+	if req.SessionToken == "" && req.Amount <= 0 {
+		response.Error(w, http.StatusBadRequest, "amount is required")
 		return
 	}
 
@@ -179,6 +185,48 @@ func ChargeHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		response.Error(w, http.StatusUnauthorized, "Invalid public key")
 		return
+	}
+
+	// A session locks in amount/currency/email server-side when it was created, so we
+	// never trust whatever the client sends for those fields — this is what stops a
+	// buyer from editing the checkout URL/request to pay less than the merchant meant
+	// to charge, or forging a fake "successful" transaction against a merchant's
+	// public key (which is not secret — it's visible in every checkout link).
+	var session *models.CheckoutSession
+	if req.SessionToken != "" {
+		session, err = claimCheckoutSession(req.SessionToken, creds, isTest)
+		if err != nil {
+			code := http.StatusBadRequest
+			if err == errCheckoutSessionUsed {
+				code = http.StatusConflict
+			} else if err == errCheckoutSessionExpired {
+				code = http.StatusGone
+			}
+			response.Error(w, code, "Checkout session is invalid, expired, or already used")
+			return
+		}
+		req.Amount = session.Amount
+		req.Currency = session.Currency
+		req.Email = session.CustomerEmail
+		if session.CustomerName != "" {
+			req.Name = session.CustomerName
+		}
+		if session.MerchantRef != "" {
+			req.Ref = session.MerchantRef
+		}
+		if session.Meta != "" {
+			var sessionMeta map[string]interface{}
+			if json.Unmarshal([]byte(session.Meta), &sessionMeta) == nil && len(sessionMeta) > 0 {
+				if req.Meta == nil {
+					req.Meta = map[string]interface{}{}
+				}
+				for k, v := range sessionMeta {
+					req.Meta[k] = v
+				}
+			}
+		}
+	} else {
+		log.Printf("⚠️ checkout: charge without session_token (client-trusted amount) public_key=%s ref=%s", req.PublicKey, req.Ref)
 	}
 
 	if req.Currency == "" {
@@ -200,12 +248,19 @@ func ChargeHandler(w http.ResponseWriter, r *http.Request) {
 		if _, ok := req.Meta["payment_method"]; !ok {
 			req.Meta["payment_method"] = "card"
 		}
-		if err := recordCheckoutPayment(
+		txnID, err := recordCheckoutPayment(
 			creds.UserID, req.Ref, amountMajor, req.Currency, isTest, req.Email,
 			"Checkout payment from "+req.Email, req.Meta,
-		); err != nil {
+		)
+		if err != nil {
+			if session != nil {
+				releaseCheckoutSession(session)
+			}
 			response.Error(w, http.StatusInternalServerError, "Failed to record payment")
 			return
+		}
+		if session != nil {
+			completeCheckoutSession(session, txnID)
 		}
 
 		go developer.DispatchWebhook(creds.UserID, "charge.success", map[string]interface{}{
@@ -242,6 +297,9 @@ func ChargeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	ok, providerRef, err := fw.ChargeCard(amountMajor, req.Currency, req.Email, req.Ref, card)
 	if err != nil || !ok {
+		if session != nil {
+			releaseCheckoutSession(session)
+		}
 		msg := "Card payment failed"
 		if err != nil {
 			msg = err.Error()
@@ -257,12 +315,19 @@ func ChargeHandler(w http.ResponseWriter, r *http.Request) {
 	req.Meta["payment_provider"] = providers.ForCard()
 	req.Meta["provider_ref"] = providerRef
 
-	if err := recordCheckoutPayment(
+	txnID, err := recordCheckoutPayment(
 		creds.UserID, req.Ref, amountMajor, req.Currency, false, req.Email,
 		"Checkout payment from "+req.Email, req.Meta,
-	); err != nil {
+	)
+	if err != nil {
+		if session != nil {
+			releaseCheckoutSession(session)
+		}
 		response.Error(w, http.StatusInternalServerError, "Failed to record payment")
 		return
+	}
+	if session != nil {
+		completeCheckoutSession(session, txnID)
 	}
 
 	go developer.DispatchWebhook(creds.UserID, "charge.success", map[string]interface{}{

@@ -92,7 +92,7 @@ func finalizeTestBankPayment(creds *models.ApiCredentials, ref string, amountKob
 		"payment_method": "bank",
 		"auto_confirmed": true,
 	}
-	if err := recordCheckoutPayment(
+	if _, err := recordCheckoutPayment(
 		creds.UserID, ref, amountMajor, currency, true, customerEmail,
 		"Bank transfer checkout from "+customerEmail, meta,
 	); err != nil {

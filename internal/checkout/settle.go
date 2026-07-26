@@ -24,10 +24,10 @@ func recordCheckoutPayment(
 	customer string,
 	description string,
 	meta map[string]interface{},
-) error {
+) (uint, error) {
 	var user models.User
 	if err := database.DB.First(&user, userID).Error; err != nil {
-		return err
+		return 0, err
 	}
 
 	isCrypto := settlement.IsCryptoPayment(meta)
@@ -67,13 +67,13 @@ func recordCheckoutPayment(
 		Description:     description,
 	}
 	if err := database.DB.Create(&txn).Error; err != nil {
-		return err
+		return 0, err
 	}
 
 	// Sandbox payments must not inflate real wallet balances shown in admin.
 	if !isTest && settledAmt > 0 && settledCur != "" {
 		if err := wallet.CreditWalletBalance(userID, settledAmt, settledCur, isTest, ref); err != nil {
-			return err
+			return txn.ID, err
 		}
 		if !isTest {
 			referral.ProcessLiveWalletCredit(userID, settledAmt, settledCur, ref, false)
@@ -81,7 +81,7 @@ func recordCheckoutPayment(
 	}
 
 	sendCheckoutPaymentEmails(&user, ref, amountMajor, currency, settledAmt, settledCur, customer, meta, isTest)
-	return nil
+	return txn.ID, nil
 }
 
 func sendCheckoutPaymentEmails(

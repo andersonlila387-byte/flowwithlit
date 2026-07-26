@@ -368,6 +368,10 @@ func main() {
 		r.Get("/rates", checkout.PublicRatesHandler)
 		r.Get("/currencies", checkout.PublicCurrenciesHandler)
 		r.Get("/crypto-assets", checkout.PublicCryptoAssetsHandler)
+		// Read-only lookup so the hosted checkout page can bootstrap the amount/currency/
+		// email that were locked in server-side when the session was created, instead of
+		// trusting whatever is in the URL.
+		r.Get("/checkout-session/{token}", checkout.GetCheckoutSessionHandler)
 		// Unauthenticated (public_key only) and takes raw card details — rate limit
 		// per IP so it can't be used for card-testing / brute-forcing card numbers.
 		r.With(myMiddleware.RateLimit(15, 1*time.Minute)).Post("/charge", checkout.ChargeHandler)
@@ -385,6 +389,10 @@ func main() {
 
 	// Transaction verification (authenticated by secret key, not JWT)
 	r.Get("/v1/transaction/verify/{ref}", checkout.VerifyTransactionHandler)
+
+	// Merchant's own server locks in amount/currency/email before sending the customer
+	// to checkout (authenticated by secret key, not JWT — never call this from a browser).
+	r.Post("/v1/checkout/sessions", checkout.CreateCheckoutSessionHandler)
 
 	// Internal mail test harness (email-test.php) — same secret as mail/dispatch.php
 	r.Route("/internal/mail", func(r chi.Router) {

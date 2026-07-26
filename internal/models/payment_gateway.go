@@ -44,18 +44,29 @@ type Invoice struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
-// CheckoutSession tracks external customers attempting to pay via links or invoices
+// CheckoutSession locks in the amount/currency/customer for a checkout attempt
+// server-side, so the hosted checkout page and ChargeHandler never have to trust
+// a client-supplied amount. Created by the merchant's own backend (secret key)
+// via POST /v1/checkout/sessions, or by our own PaymentLink/Invoice pay flows.
 type CheckoutSession struct {
-	ID            uint      `gorm:"primaryKey" json:"id"`
-	PaymentLinkID *uint     `gorm:"index" json:"payment_link_id"`
-	InvoiceID     *uint     `gorm:"index" json:"invoice_id"`
-	CustomerID    *uint     `gorm:"index" json:"customer_id"`
-	CustomerEmail string    `gorm:"size:255" json:"customer_email"` // Fallback if no CustomerID
-	Amount        float64   `gorm:"type:decimal(20,4);not null" json:"amount"`
-	Currency      string    `gorm:"size:10;not null" json:"currency"`
-	Status        string    `gorm:"size:20;not null;default:'pending'" json:"status"` // pending, successful, failed
-	PaymentMethod string    `gorm:"size:50" json:"payment_method"` // card, bank_transfer
-	TransactionID *uint     `gorm:"index" json:"transaction_id"` // Links to the master ledger once successful
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID            uint       `gorm:"primaryKey" json:"id"`
+	Token         string     `gorm:"size:40;uniqueIndex;not null" json:"token"` // public identifier used in checkout URLs
+	UserID        uint       `gorm:"not null;index" json:"user_id"`             // merchant this session belongs to
+	IsTest        bool       `gorm:"default:false" json:"is_test"`              // created with a test or live key
+	PaymentLinkID *uint      `gorm:"index" json:"payment_link_id"`
+	InvoiceID     *uint      `gorm:"index" json:"invoice_id"`
+	CustomerID    *uint      `gorm:"index" json:"customer_id"`
+	CustomerEmail string     `gorm:"size:255" json:"customer_email"` // Fallback if no CustomerID
+	CustomerName  string     `gorm:"size:255" json:"customer_name"`
+	Amount        float64    `gorm:"type:decimal(20,4);not null" json:"amount"` // kobo / minor units, authoritative
+	Currency      string     `gorm:"size:10;not null" json:"currency"`
+	MerchantRef   string     `gorm:"size:100" json:"merchant_ref"` // merchant's own reference, becomes the transaction ref
+	Meta          string     `gorm:"type:text" json:"-"`           // JSON-encoded passthrough meta
+	Status        string     `gorm:"size:20;not null;default:'pending'" json:"status"` // pending, completed, expired
+	PaymentMethod string     `gorm:"size:50" json:"payment_method"`                    // card, bank_transfer
+	TransactionID *uint      `gorm:"index" json:"transaction_id"`                      // Links to the master ledger once successful
+	ExpiresAt     time.Time  `json:"expires_at"`
+	CompletedAt   *time.Time `json:"completed_at"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
