@@ -224,10 +224,17 @@ func finishLogin(w http.ResponseWriter, r *http.Request, user models.User) {
 	})
 	activity.Info("auth", "login_ok", "User signed in via "+label, activity.UID(user.ID), "", ip)
 
-	// Return strictly matching what frontend expects
+	// One account everywhere: web business + mobile share the same user, PIN, and wallets.
+	hasPIN := user.TransactionPin != ""
+	user.Password = ""
+	user.TransactionPin = ""
+
 	response.Success(w, http.StatusOK, map[string]interface{}{
-		"accessToken":  accessToken,
-		"refreshToken": refreshToken,
-		"user":         user,
+		"accessToken":         accessToken,
+		"refreshToken":        refreshToken,
+		"user":                user,
+		"has_transaction_pin": hasPIN,
+		// Mobile + web use the same 4-digit transaction PIN set in Settings / app
+		"kyc_level": user.KYCLevel,
 	})
 }

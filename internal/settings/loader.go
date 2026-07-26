@@ -59,13 +59,25 @@ func SmileID() smileid.Config {
 	}
 }
 
-// OnePipeClient builds a OnePipe client using admin payment keys.
+// OnePipeClient builds a OnePipe client using admin payment keys (server-side only).
 func OnePipeClient() *onepipe.Client {
-	return onepipe.NewClient(
+	c := onepipe.NewClient(
 		strings.TrimSpace(Get("onepipe_api_key")),
 		strings.TrimSpace(Get("onepipe_secret")),
 		"",
 	)
+	provider := strings.TrimSpace(Get("onepipe_auth_provider"))
+	if provider == "" {
+		provider = "PolarisVirtual"
+	}
+	c.WithAuthProvider(provider)
+	mode := strings.ToLower(strings.TrimSpace(Get("onepipe_mock_mode")))
+	if mode == "inspect" {
+		c.WithMockMode("inspect")
+	} else {
+		c.WithMockMode("live")
+	}
+	return c
 }
 
 // FlutterwaveClient builds a Flutterwave client using admin payment keys.

@@ -2,10 +2,12 @@ package webhook
 
 import (
 	"crypto/hmac"
+	"crypto/md5"
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -15,9 +17,11 @@ import (
 
 	"flowwithlit/internal/activity"
 	"flowwithlit/internal/database"
+	"flowwithlit/internal/integration/onepipe"
 	"flowwithlit/internal/integration/smileid"
 	"flowwithlit/internal/models"
 	"flowwithlit/internal/settings"
+	"flowwithlit/internal/wallet"
 )
 
 func logWebhook(provider, eventType, payload, status, errMsg, ip string, processingMs int64) {
@@ -89,23 +93,52 @@ func softVerify(provider, secret string, body []byte, candidates ...string) (ok 
 	return false, true
 }
 
-// OnePipeWebhookPayload represents the expected JSON payload from OnePipe
-type OnePipeWebhookPayload struct {
-	Event         string  `json:"event"`
-	TransactionID string  `json:"transaction_id"`
-	AccountNumber string  `json:"account_number"`
-	Amount        float64 `json:"amount"`
-	Currency      string  `json:"currency"`
-	Status        string  `json:"status"`
+// verifyOnePipeSignature accepts HMAC body signatures OR MD5(request_ref;secret) per OnePipe docs.
+func verifyOnePipeSignature(secret string, body []byte, requestRef string, candidates ...string) (ok bool, enforced bool) {
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		// Fall back to app secret used for API signing
+		secret = strings.TrimSpace(settings.Get("onepipe_secret"))
+	}
+	if secret == "" {
+		log.Printf("[Webhook] onepipe: no webhook/app secret — accepting without signature check")
+		return true, false
+	}
+	enforced = true
+	expectedMD5 := ""
+	if requestRef != "" {
+		expectedMD5 = onepipe.Signature(requestRef, secret)
+	}
+	for _, c := range candidates {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		if expectedMD5 != "" && strings.EqualFold(c, expectedMD5) {
+			return true, true
+		}
+		if hmac.Equal([]byte(c), []byte(secret)) {
+			return true, true
+		}
+		if verifyHMACHex(secret, body, c) {
+			return true, true
+		}
+		// MD5 of full body (some integrations)
+		sum := md5.Sum(body)
+		if strings.EqualFold(c, hex.EncodeToString(sum[:])) {
+			return true, true
+		}
+	}
+	return false, true
 }
 
-// OnePipeHandler receives transaction alerts from OnePipe.
-// Signature enforcement is soft: only when onepipe_webhook_secret (or fallback onepipe_secret) is set.
+// OnePipeHandler receives deposit / payment-completion notifications (server-side only).
+// Credits the matching user's wallet when a successful collect hits their deposit account number.
 func OnePipeHandler(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	ip := r.RemoteAddr
 
-	log.Println("[Webhook] Received incoming webhook from OnePipe")
+	log.Println("[Webhook] Incoming bank-rail deposit notification")
 
 	raw, err := readRawBody(r)
 	if err != nil {
@@ -114,48 +147,194 @@ func OnePipeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only the dedicated webhook secret enforces signatures. API key/secret alone
-	// never blocks deposits (live stays open until you explicitly set webhook secret).
-	secret := settings.Get("onepipe_webhook_secret")
+	var envelope map[string]interface{}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		logWebhook("onepipe", "unknown", string(raw), "failed", "Invalid JSON payload", ip, time.Since(start).Milliseconds())
+		http.Error(w, "Invalid payload", http.StatusBadRequest)
+		return
+	}
+
+	requestRef := stringField(envelope, "request_ref")
 	sigCandidates := []string{
 		r.Header.Get("X-OnePipe-Signature"),
 		r.Header.Get("X-Signature"),
 		r.Header.Get("X-Hub-Signature-256"),
 		r.Header.Get("Signature"),
 	}
-	if ok, enforced := softVerify("onepipe", secret, raw, sigCandidates...); !ok {
+	secret := strings.TrimSpace(settings.Get("onepipe_webhook_secret"))
+	if ok, enforced := verifyOnePipeSignature(secret, raw, requestRef, sigCandidates...); !ok {
 		logWebhook("onepipe", "unknown", string(raw), "failed", "Invalid or missing signature", ip, time.Since(start).Milliseconds())
-		activity.Error("webhook", "onepipe_sig_failed", "Invalid or missing OnePipe signature", nil, "", ip)
+		activity.Error("webhook", "rail_sig_failed", "Invalid bank-rail webhook signature", nil, "", ip)
 		http.Error(w, "Invalid signature", http.StatusUnauthorized)
 		return
 	} else if enforced {
-		log.Println("[Webhook] OnePipe signature verified")
+		log.Println("[Webhook] Bank-rail signature verified")
 	}
 
-	var payload OnePipeWebhookPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		logWebhook("onepipe", "unknown", string(raw), "failed", "Invalid JSON payload", ip, time.Since(start).Milliseconds())
-		http.Error(w, "Invalid payload", http.StatusBadRequest)
-		return
+	// Normalize flat + nested OnePipe notification shapes
+	eventType := stringField(envelope, "event", "request_type")
+	details := mapField(envelope, "details")
+	if details == nil {
+		details = envelope
 	}
 
-	// Credit path remains deferred: find user by ProviderAccountReference, credit wallet in ACID txn.
-	if payload.Event == "transaction.successful" {
-		log.Printf("[Webhook] OnePipe deposit successful: %s %.2f into account %s\n", payload.Currency, payload.Amount, payload.AccountNumber)
-		logWebhook("onepipe", payload.Event, string(raw), "processed", "", ip, time.Since(start).Milliseconds())
-		activity.Success("webhook", "onepipe_deposit", "OnePipe deposit alert "+payload.Currency, nil, payload.TransactionID, ip)
-	} else {
-		event := payload.Event
-		if event == "" {
-			event = "received"
+	status := strings.ToLower(stringField(details, "status", "Status"))
+	if status == "" {
+		status = strings.ToLower(stringField(envelope, "status"))
+	}
+	txnType := strings.ToLower(stringField(details, "transaction_type"))
+	amountRaw := floatField(details, "amount", "Amount", "payment_amount")
+	if amountRaw == 0 {
+		amountRaw = floatField(envelope, "amount")
+	}
+	// OnePipe transaction amounts are in kobo (minor units) for NGN.
+	amountNaira := amountRaw / 100.0
+	currency := strings.ToUpper(stringField(details, "currency", "Currency"))
+	if currency == "" {
+		currency = "NGN"
+	}
+	accountNumber := extractAccountNumber(details, envelope)
+	txnRef := stringField(details, "transaction_ref", "TransactionID", "transaction_id", "reference")
+	if txnRef == "" {
+		txnRef = requestRef
+	}
+	if txnRef == "" {
+		txnRef = "OP_" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	}
+
+	isSuccess := status == "successful" || status == "success" || status == "completed" ||
+		strings.EqualFold(stringField(envelope, "event"), "transaction.successful")
+	isCollect := txnType == "" || txnType == "collect" || strings.Contains(strings.ToLower(eventType), "payment") ||
+		strings.Contains(strings.ToLower(eventType), "transaction_notification") ||
+		strings.Contains(strings.ToLower(eventType), "transaction.successful")
+
+	if isSuccess && isCollect && accountNumber != "" && amountNaira > 0 {
+		var dep models.DepositAccount
+		err := database.DB.Where("account_number = ?", accountNumber).First(&dep).Error
+		if err != nil {
+			// try without leading zeros / whitespace
+			err = database.DB.Where("account_number = ?", strings.TrimSpace(accountNumber)).First(&dep).Error
 		}
-		logWebhook("onepipe", event, string(raw), "received", "", ip, time.Since(start).Milliseconds())
-		activity.Info("webhook", "onepipe_"+event, "OnePipe event received", nil, payload.TransactionID, ip)
+		if err != nil {
+			log.Printf("[Webhook] No deposit account for %s — logged only", accountNumber)
+			logWebhook("onepipe", eventType, string(raw), "received", "no matching deposit account", ip, time.Since(start).Milliseconds())
+			activity.Warning("webhook", "rail_deposit_unmatched", "Deposit notify for unknown account", nil, txnRef, ip)
+		} else {
+			creditCur := strings.ToUpper(dep.Currency)
+			if creditCur == "" {
+				creditCur = currency
+			}
+			if _, err := wallet.EnsureWallet(database.DB, dep.UserID, creditCur); err != nil {
+				log.Printf("[Webhook] EnsureWallet failed user=%d: %v", dep.UserID, err)
+			}
+			// Internal provider label only (ledger) — never shown as marketing brand to end users.
+			if err := wallet.FundWallet(dep.UserID, amountNaira, creditCur, "bank_transfer", txnRef, "Bank transfer deposit"); err != nil {
+				log.Printf("[Webhook] FundWallet failed user=%d: %v", dep.UserID, err)
+				logWebhook("onepipe", eventType, string(raw), "failed", err.Error(), ip, time.Since(start).Milliseconds())
+				// Still 200 so provider does not infinite-retry poison payloads; ops can replay from logs
+			} else {
+				log.Printf("[Webhook] Credited user=%d amount=%.2f %s ref=%s", dep.UserID, amountNaira, creditCur, txnRef)
+				logWebhook("onepipe", eventType, string(raw), "processed", "", ip, time.Since(start).Milliseconds())
+				uid := dep.UserID
+				activity.Success("webhook", "rail_deposit", "Wallet funded via bank transfer", &uid, txnRef, ip)
+				_ = database.DB.Create(&models.Notification{
+					UserID:  dep.UserID,
+					Type:    "wallet",
+					Title:   "Deposit received",
+					Message: "Your wallet has been credited from a bank transfer.",
+				}).Error
+			}
+		}
+	} else {
+		logWebhook("onepipe", eventType, string(raw), "received", "", ip, time.Since(start).Milliseconds())
+		activity.Info("webhook", "rail_event", "Bank-rail event received", nil, txnRef, ip)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"success"}`))
+}
+
+func stringField(m map[string]interface{}, keys ...string) string {
+	if m == nil {
+		return ""
+	}
+	for _, k := range keys {
+		if v, ok := m[k]; ok && v != nil {
+			switch t := v.(type) {
+			case string:
+				if strings.TrimSpace(t) != "" {
+					return strings.TrimSpace(t)
+				}
+			case float64:
+				return strconv.FormatInt(int64(t), 10)
+			default:
+				s := strings.TrimSpace(fmt.Sprint(t))
+				if s != "" && s != "<nil>" {
+					return s
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func floatField(m map[string]interface{}, keys ...string) float64 {
+	if m == nil {
+		return 0
+	}
+	for _, k := range keys {
+		if v, ok := m[k]; ok && v != nil {
+			switch t := v.(type) {
+			case float64:
+				return t
+			case json.Number:
+				f, _ := t.Float64()
+				return f
+			case string:
+				f, _ := strconv.ParseFloat(strings.TrimSpace(t), 64)
+				return f
+			case int:
+				return float64(t)
+			case int64:
+				return float64(t)
+			}
+		}
+	}
+	return 0
+}
+
+func mapField(m map[string]interface{}, key string) map[string]interface{} {
+	if m == nil {
+		return nil
+	}
+	if v, ok := m[key]; ok {
+		if nested, ok := v.(map[string]interface{}); ok {
+			return nested
+		}
+	}
+	return nil
+}
+
+func extractAccountNumber(details, envelope map[string]interface{}) string {
+	if a := stringField(details, "account_number", "AccountNumber", "beneficiary_account_number", "BeneficiaryAccountNumber"); a != "" {
+		return a
+	}
+	if a := stringField(envelope, "account_number", "AccountNumber"); a != "" {
+		return a
+	}
+	// Nested provider data blobs
+	if data := mapField(details, "data"); data != nil {
+		if a := stringField(data, "account_number", "BeneficiaryAccountNumber"); a != "" {
+			return a
+		}
+		if inner := mapField(data, "data"); inner != nil {
+			if a := stringField(inner, "account_number", "BeneficiaryAccountNumber"); a != "" {
+				return a
+			}
+		}
+	}
+	return ""
 }
 
 // FlutterwaveHandler receives transaction alerts from Flutterwave.

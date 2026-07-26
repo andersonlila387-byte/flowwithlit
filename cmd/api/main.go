@@ -132,10 +132,12 @@ func main() {
 	r.Route("/user", func(r chi.Router) {
 		r.Use(myMiddleware.RequireAuth)
 		r.Get("/me", user.GetMeHandler)
+		// One account: web business + mobile share PIN, balances, KYC
+		r.Get("/mobile/home", user.MobileHomeHandler)
 		r.Put("/profile", user.UpdateProfileHandler)
 		r.Put("/password", user.UpdatePasswordHandler)
 		r.Put("/profile-image", user.UpdateProfileImageHandler)
-		r.Post("/pin/setup", user.SetupPINHandler)
+		r.With(myMiddleware.RateLimit(8, 1*time.Minute)).Post("/pin/setup", user.SetupPINHandler)
 		r.With(myMiddleware.RateLimit(5, 1*time.Minute)).Post("/pin/verify", user.VerifyPINHandler)
 		r.Get("/2fa/generate", user.Generate2FAHandler)
 		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/2fa/verify", user.Verify2FAHandler)
@@ -277,6 +279,10 @@ func main() {
 		r.Get("/status", kyc.StatusHandler)
 		r.Get("/profile", kyc.GetProfileHandler)
 		r.Post("/activate", kyc.ActivateHandler)
+		// Mobile personal KYC (BVN/NIN → deposit VA). No business form; server-side rail only.
+		r.Get("/mobile/status", kyc.MobileStatusHandler)
+		r.With(myMiddleware.RateLimit(10, 1*time.Minute)).Post("/mobile/verify", kyc.MobileVerifyHandler)
+		r.With(myMiddleware.RateLimit(5, 1*time.Minute)).Post("/mobile/ensure-deposit", kyc.MobileEnsureDepositHandler)
 	})
 
 	// FlowTag

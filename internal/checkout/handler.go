@@ -4,17 +4,18 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
 
+	"flowwithlit/internal/bankrails"
 	"flowwithlit/internal/database"
 	"flowwithlit/internal/developer"
-	"flowwithlit/internal/bankrails"
 	"flowwithlit/internal/models"
 	"flowwithlit/internal/providers"
-	"flowwithlit/internal/settings"
 	"flowwithlit/internal/rates"
+	"flowwithlit/internal/settings"
 	"flowwithlit/pkg/response"
 
 	"github.com/go-chi/chi/v5"
@@ -38,6 +39,7 @@ func lookupCreds(key string) (*models.ApiCredentials, bool, error) {
 
 // MerchantInfoHandler returns public merchant info so the checkout page can show the merchant name.
 // GET /public/merchant-info?key=flw_pub_test_xxx
+// Also returns payment_methods so the UI can hide/lock rails the admin has not configured.
 func MerchantInfoHandler(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Query().Get("key")
 	if key == "" {
@@ -52,13 +54,74 @@ func MerchantInfoHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.Success(w, http.StatusOK, map[string]interface{}{
-		"merchant_name": merchantDisplayName(creds.UserID),
-		"is_test":       isTest,
+		"merchant_name":    merchantDisplayName(creds.UserID),
+		"is_test":          isTest,
+		"payment_methods":  checkoutPaymentMethods(isTest),
 	})
+}
+
+// checkoutPaymentMethods reports which buyer rails are ready (no vendor names in user-facing reasons).
+func checkoutPaymentMethods(isTest bool) map[string]interface{} {
+	flwOK := settings.FlutterwaveClient().Configured()
+	opOK := settings.OnePipeClient().Configured()
+	ppOK := settings.PalmPayClient().Configured()
+	circleOK := settings.CircleClient().Configured()
+	bankRailOK := opOK || ppOK || flwOK
+
+	// Card: test keys can charge in FLW test; live needs secret key.
+	cardOK := isTest || flwOK
+	cardReason := ""
+	if !cardOK {
+		cardReason = "Card payments are not available yet. The merchant is finishing setup."
+	}
+
+	// Bank: test always has simulated VA; live needs a bank rail key.
+	bankOK := isTest || bankRailOK
+	bankReason := ""
+	if !bankOK {
+		bankReason = "Bank transfer is not available yet. The merchant is finishing setup."
+	}
+
+	// Crypto: never show fake live addresses. Only open when Circle API key is set.
+	// Test sim crypto is off unless Circle is configured — honest lock when not set up.
+	cryptoOK := circleOK
+	cryptoReason := ""
+	if !cryptoOK {
+		cryptoReason = "Cryptocurrency is not available yet. Not configured by the platform."
+	}
+
+	return map[string]interface{}{
+		"card": map[string]interface{}{
+			"available": cardOK,
+			"reason":    cardReason,
+			"mode":      ternaryStr(isTest, "test", "live"),
+		},
+		"bank": map[string]interface{}{
+			"available": bankOK,
+			"reason":    bankReason,
+			"mode":      ternaryStr(isTest, "test_sim", "live"),
+		},
+		"crypto": map[string]interface{}{
+			"available": cryptoOK,
+			"reason":    cryptoReason,
+			// Live deposits still require finished Circle address API; UI may show “setup” vs “processing”.
+			"mode": ternaryStr(circleOK, "live_keys", "off"),
+		},
+	}
+}
+
+func ternaryStr(cond bool, a, b string) string {
+	if cond {
+		return a
+	}
+	return b
 }
 
 // BankDetailsHandler returns NGN virtual account details for bank-transfer checkout.
 // GET /public/bank-details?key=flw_pub_test_xxx&ref=optional&amount=500000&email=optional
+//
+// Test keys (flw_pub_test_*): simulated account only — no real bank rail, no real money.
+// Live keys (flw_pub_live_*): real merchant deposit account / live rail.
 func BankDetailsHandler(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Query().Get("key")
 	if key == "" {
@@ -73,7 +136,7 @@ func BankDetailsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var user models.User
-	if err := database.DB.Select("first_name, last_name, email, phone").First(&user, creds.UserID).Error; err != nil {
+	if err := database.DB.Select("id, first_name, last_name, email, phone").First(&user, creds.UserID).Error; err != nil {
 		response.Error(w, http.StatusNotFound, "Merchant not found")
 		return
 	}
@@ -83,12 +146,6 @@ func BankDetailsHandler(w http.ResponseWriter, r *http.Request) {
 		currency = "NGN"
 	}
 
-	rail, err := bankrails.Resolve(currency, user.FirstName, user.LastName, user.Email, user.Phone)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "Could not generate virtual account")
-		return
-	}
-
 	ref := r.URL.Query().Get("ref")
 	amountKobo := parseAmountKobo(r.URL.Query().Get("amount"))
 	customerEmail := r.URL.Query().Get("email")
@@ -96,30 +153,99 @@ func BankDetailsHandler(w http.ResponseWriter, r *http.Request) {
 		customerEmail = user.Email
 	}
 
-	if ref != "" && amountKobo > 0 {
-		registerPendingBankTransfer(ref, creds.UserID, amountKobo, rail.Currency, customerEmail)
+	merchantName := merchantDisplayName(creds.UserID)
+
+	// ── TEST MODE: never touch real bank rails or real accounts ──────────────
+	if isTest {
+		if ref != "" && amountKobo > 0 {
+			registerPendingBankTransfer(ref, creds.UserID, amountKobo, currency, customerEmail)
+		}
+		// Clearly simulated — buyers must not send real money here
+		testAcct := testSimulatedAccountNumber(ref, creds.UserID)
+		response.Success(w, http.StatusOK, map[string]interface{}{
+			"currency":       currency,
+			"bank_name":      "Test Bank (Simulated)",
+			"account_number": testAcct,
+			"account_name":   merchantName + " (TEST)",
+			"reference":      ref,
+			"instructions":   "TEST MODE — do not send real money. Payment will auto-confirm in a few seconds for integration testing.",
+			"is_test":        true,
+			"simulated":      true,
+		})
+		return
 	}
 
-	merchantName := merchantDisplayName(creds.UserID)
-	providerLabel := "Flutterwave"
-	switch rail.Provider {
-	case providers.OnePipe:
-		providerLabel = "OnePipe"
-	case providers.PalmPay:
-		providerLabel = "PalmPay"
+	// ── LIVE MODE: real deposit account / live NGN rail ─────────────────────
+	var bankName, accountNumber, accountName string
+
+	var dep models.DepositAccount
+	if err := database.DB.Where("user_id = ? AND currency = ?", creds.UserID, currency).
+		Order("is_default desc, id asc").First(&dep).Error; err == nil &&
+		strings.TrimSpace(dep.AccountNumber) != "" &&
+		!strings.HasPrefix(strings.TrimSpace(dep.AccountNumber), "000") {
+		bankName = dep.BankName
+		accountNumber = dep.AccountNumber
+		accountName = dep.AccountName
+		if accountName == "" {
+			accountName = merchantName
+		}
+	} else {
+		// Open / resolve live VA for this merchant (server-side only)
+		rail, railErr := bankrails.ResolveWithOpts(currency, user.FirstName, user.LastName, user.Email, user.Phone, bankrails.CustomerOpts{
+			UserID: fmt.Sprintf("%d", user.ID),
+		})
+		if railErr != nil {
+			response.Error(w, http.StatusInternalServerError, "Could not generate virtual account for live checkout. Complete merchant deposit setup and try again.")
+			return
+		}
+		bankName = rail.BankName
+		accountNumber = rail.AccountNumber
+		accountName = merchantName
+		// Persist for future checkouts / Add Fund (best-effort, no overwrite of existing)
+		if strings.TrimSpace(accountNumber) != "" {
+			var existing models.DepositAccount
+			if database.DB.Where("user_id = ? AND currency = ?", creds.UserID, currency).First(&existing).Error != nil {
+				_ = database.DB.Create(&models.DepositAccount{
+					UserID:        creds.UserID,
+					Currency:      currency,
+					AccountNumber: accountNumber,
+					BankName:      bankName,
+					AccountName:   accountName,
+					Provider:      rail.Provider,
+					IsDefault:     true,
+				}).Error
+			}
+		}
+	}
+
+	if ref != "" && amountKobo > 0 {
+		// Live: register pending so status can be polled; only real webhook/credit settles
+		registerPendingBankTransfer(ref, creds.UserID, amountKobo, currency, customerEmail)
 	}
 
 	response.Success(w, http.StatusOK, map[string]interface{}{
-		"currency":            rail.Currency,
-		"bank_name":           rail.BankName,
-		"account_number":      rail.AccountNumber,
-		"account_name":        merchantName,
-		"reference":           ref,
-		"payment_provider":    rail.Provider,
-		"provider_configured": rail.Configured,
-		"instructions":        "Transfer the exact amount to this account. Payment is confirmed automatically once received via " + providerLabel + ".",
-		"is_test":             isTest,
+		"currency":       currency,
+		"bank_name":      bankName,
+		"account_number": accountNumber,
+		"account_name":   accountName,
+		"reference":      ref,
+		"instructions":   "Transfer the exact amount to this account. Payment is confirmed automatically once received.",
+		"is_test":        false,
+		"simulated":      false,
 	})
+}
+
+// testSimulatedAccountNumber builds an obvious non-real NUBAN for test checkout.
+// Format 000XXXXXXX so it can never be confused with a live collection account.
+func testSimulatedAccountNumber(ref string, merchantID uint) string {
+	h := 0
+	for _, c := range ref + fmt.Sprintf("%d", merchantID) {
+		h = (h*31 + int(c)) % 10000000
+	}
+	if h < 0 {
+		h = -h
+	}
+	return fmt.Sprintf("000%07d", h)
 }
 
 // BankStatusHandler polls for incoming bank transfer (auto-confirms in test mode).
@@ -295,14 +421,24 @@ func ChargeHandler(w http.ResponseWriter, r *http.Request) {
 		"expiry_month": req.ExpiryMonth,
 		"expiry_year":  req.ExpiryYear,
 	}
+	if !fw.Configured() {
+		if session != nil {
+			releaseCheckoutSession(session)
+		}
+		response.Error(w, http.StatusBadRequest, "Live card payments are not available right now. Please try another method or contact the merchant.")
+		return
+	}
 	ok, providerRef, err := fw.ChargeCard(amountMajor, req.Currency, req.Email, req.Ref, card)
 	if err != nil || !ok {
 		if session != nil {
 			releaseCheckoutSession(session)
 		}
-		msg := "Card payment failed"
+		msg := "Card payment failed. Check card details and try again."
 		if err != nil {
-			msg = err.Error()
+			e := strings.ToLower(err.Error())
+			if !strings.Contains(e, "flutterwave") && !strings.Contains(e, "configured") && !strings.Contains(e, "key-get") {
+				msg = err.Error()
+			}
 		}
 		response.Error(w, http.StatusBadRequest, msg)
 		return
@@ -343,13 +479,14 @@ func ChargeHandler(w http.ResponseWriter, r *http.Request) {
 		"is_test":  false,
 	})
 
+	// Never expose card processor brand to the browser
 	response.Success(w, http.StatusOK, map[string]interface{}{
 		"status":          "successful",
 		"transaction_ref": req.Ref,
 		"amount":          req.Amount,
 		"currency":        req.Currency,
-		"provider":        providers.ForCard(),
 		"message":         "Payment successful",
+		"is_test":         false,
 	})
 }
 

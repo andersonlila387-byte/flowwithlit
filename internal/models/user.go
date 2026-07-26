@@ -17,6 +17,9 @@ type User struct {
 	LastName  string         `gorm:"size:100" json:"last_name"`
 	Phone        string `gorm:"size:20" json:"phone"`
 	ProfileImage string `gorm:"size:500" json:"profile_image"`
+	// Public-facing profile (app Profile page — not security settings)
+	CoverImage string `gorm:"size:500" json:"cover_image"`
+	Bio        string `gorm:"size:280" json:"bio"` // short intro / about line
 	KYCLevel  int            `gorm:"default:0" json:"kyc_level"` // 0=None, 1=Basic, 2=Verified (Also known as Tier)
 	// AccountType: USER (adult) | MERCHANT | JUNIOR (child sub-account in kid's name)
 	AccountType string       `gorm:"default:'USER';size:50" json:"account_type"`

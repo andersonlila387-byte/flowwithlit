@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 )
 
 const defaultBaseURL = "https://api.flutterwave.com/v3"
@@ -211,14 +212,64 @@ func (c *Client) ChargeCard(amount float64, currency, email, ref string, card ma
 	return ok, refOut, nil
 }
 
-// ProcessTransfer sends a payout to a bank account (non-NGN currencies).
+// ProcessTransfer sends a payout to a bank account via Flutterwave Transfer API.
 func (c *Client) ProcessTransfer(amount float64, currency, bankCode, accountNumber, narration string) (bool, string, error) {
 	if !c.Configured() {
-		return false, "", fmt.Errorf("Flutterwave secret key not configured in Admin → Settings (see key-get.md)")
+		return false, "", fmt.Errorf("payout rail not configured")
 	}
-	log.Printf("[Flutterwave] Transfer %.2f %s → %s", amount, currency, accountNumber)
-	// Live: POST /v3/transfers
-	return false, "", fmt.Errorf("Flutterwave transfer live call not finished — keys present; complete transfer API wiring (see key-get.md)")
+	currency = strings.ToUpper(strings.TrimSpace(currency))
+	if currency == "" {
+		currency = "NGN"
+	}
+	accountNumber = strings.TrimSpace(accountNumber)
+	bankCode = strings.TrimSpace(bankCode)
+	if accountNumber == "" || bankCode == "" || amount <= 0 {
+		return false, "", fmt.Errorf("bank, account number and amount are required")
+	}
+	ref := fmt.Sprintf("FLW-TRF-%d", time.Now().UnixNano()%1e12)
+	payload := map[string]interface{}{
+		"account_bank":   bankCode,
+		"account_number": accountNumber,
+		"amount":         amount,
+		"narration":      nonEmptyFLW(narration, "Transfer"),
+		"currency":       currency,
+		"reference":      ref,
+		"debit_currency": currency,
+	}
+	log.Printf("[Flutterwave] Transfer %.2f %s → %s bank=%s", amount, currency, accountNumber, bankCode)
+	data, code, err := c.authRequest(http.MethodPost, "/transfers", payload)
+	if err != nil {
+		return false, "", err
+	}
+	var out struct {
+		Status  string `json:"status"`
+		Message string `json:"message"`
+		Data    struct {
+			ID        int    `json:"id"`
+			Reference string `json:"reference"`
+			Status    string `json:"status"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(data, &out)
+	if code < 200 || code >= 300 || !strings.EqualFold(out.Status, "success") {
+		msg := strings.TrimSpace(out.Message)
+		if msg == "" {
+			msg = fmt.Sprintf("transfer failed (HTTP %d)", code)
+		}
+		return false, "", fmt.Errorf("%s", msg)
+	}
+	providerRef := strings.TrimSpace(out.Data.Reference)
+	if providerRef == "" {
+		providerRef = ref
+	}
+	return true, providerRef, nil
+}
+
+func nonEmptyFLW(v, fallback string) string {
+	if strings.TrimSpace(v) != "" {
+		return strings.TrimSpace(v)
+	}
+	return fallback
 }
 
 // PayBill purchases airtime/data/electricity/cable via Flutterwave Bill Payments.

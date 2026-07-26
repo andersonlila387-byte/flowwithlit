@@ -24,8 +24,13 @@ func getActiveProvider() KYCProvider {
 		return &FlutterwaveProvider{}
 	case "smileid":
 		return NewSmileIDProvider()
+	case "onepipe":
+		return &OnePipeProvider{}
 	default:
-		// Default to Flutterwave since it has manual fallback, or Smile ID
+		// Prefer OnePipe for NG identity when configured; else Flutterwave hybrid
+		if settings.OnePipeClient().Configured() {
+			return &OnePipeProvider{}
+		}
 		return &FlutterwaveProvider{}
 	}
 }
@@ -50,7 +55,7 @@ func StatusHandler(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, http.StatusOK, map[string]interface{}{
 		"completed": user.KYCLevel > 0,
 		"level":     user.KYCLevel,
-		"provider":  settings.KYCProvider(),
+		// Do not expose underlying KYC vendor to the client
 	})
 }
 
@@ -88,6 +93,12 @@ func ActivateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var user models.User
+	if err := database.DB.First(&user, userID).Error; err != nil {
+		response.Error(w, http.StatusUnauthorized, "User not found")
+		return
+	}
+
 	provider := getActiveProvider()
 
 	identityPayload := IdentityPayload{
@@ -95,6 +106,13 @@ func ActivateHandler(w http.ResponseWriter, r *http.Request) {
 		PrimaryIDType: req.PrimaryIDType,
 		PrimaryIDVal:  req.PrimaryIDVal,
 		UserID:        fmt.Sprintf("%d", userID),
+		FirstName:     user.FirstName,
+		LastName:      user.LastName,
+		Email:         user.Email,
+		Phone:         firstNonEmpty(req.Phone, user.Phone),
+	}
+	if user.DateOfBirth != nil {
+		identityPayload.DOB = user.DateOfBirth.Format("2006-01-02")
 	}
 
 	status, err := provider.VerifyIdentity(identityPayload)
@@ -103,13 +121,9 @@ func ActivateHandler(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			errMsg = err.Error()
 		}
+		// Never leak vendor/rail names to the browser
+		errMsg = sanitizePublicError(errMsg)
 		response.Error(w, http.StatusBadRequest, errMsg)
-		return
-	}
-
-	var user models.User
-	if err := database.DB.First(&user, userID).Error; err != nil {
-		response.Error(w, http.StatusUnauthorized, "User not found")
 		return
 	}
 
@@ -174,6 +188,14 @@ func ActivateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// When identity is auto-approved, provision deposit account immediately (server-side rail only).
+	if status == "approved" {
+		if _, err := wallet.EnsureDefaultDepositAccount(user.ID); err != nil {
+			// Non-fatal: admin can re-approve / user can retry Add Fund
+			_ = err
+		}
+	}
+
 	if to := strings.TrimSpace(user.Email); to != "" {
 		_ = email.SendBusinessActivated(
 			to, user.FirstName, profile.BusinessName,
@@ -183,10 +205,29 @@ func ActivateHandler(w http.ResponseWriter, r *http.Request) {
 
 	response.Success(w, http.StatusOK, map[string]interface{}{
 		"message":                 "Business activated successfully!",
-		"provider_used":           provider.Name(),
 		"default_fiat_currency":   fiatCur,
 		"default_crypto_currency": cryptoCur,
+		// Never return underlying rail / KYC vendor names to the browser
 	})
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+func sanitizePublicError(msg string) string {
+	lower := strings.ToLower(msg)
+	for _, vendor := range []string{"onepipe", "flutterwave", "palmpay", "smile id", "smileid", "circle"} {
+		if strings.Contains(lower, vendor) {
+			return "Identity verification failed. Please check your details and try again."
+		}
+	}
+	return msg
 }
 
 func GetProfileHandler(w http.ResponseWriter, r *http.Request) {

@@ -9,6 +9,7 @@ import (
 
 	"flowwithlit/internal/activity"
 	"flowwithlit/internal/database"
+	"flowwithlit/internal/integration/flutterwave"
 	"flowwithlit/internal/models"
 	"flowwithlit/internal/providers"
 	"flowwithlit/internal/settings"
@@ -45,43 +46,112 @@ type BankNameLookupResponse struct {
 	BankCode      string `json:"bank_code"`
 }
 
-// BanksHandler returns real bank list (Flutterwave) for transfers.
+// BanksHandler returns Nigerian banks for the transfer UI.
+// Preference: Flutterwave live list → OnePipe get_banks → static NIBSS list.
+// Never fails with "key not configured" for the static fallback.
 func BanksHandler(w http.ResponseWriter, r *http.Request) {
 	country := r.URL.Query().Get("country")
 	if country == "" {
 		country = "NG"
 	}
+
+	source := "static"
+	var banks []flutterwave.BankItem
+
 	fw := settings.FlutterwaveClient()
-	banks, err := fw.ListBanks(country)
-	if err != nil {
-		response.Error(w, http.StatusBadGateway, err.Error())
-		return
+	if fw.Configured() {
+		if list, err := fw.ListBanks(country); err == nil && len(list) > 0 {
+			banks = list
+			source = "live"
+		}
 	}
+	if len(banks) == 0 && settings.OnePipeClient().Configured() {
+		if list, err := settings.OnePipeClient().ListBanks(); err == nil && len(list) > 0 {
+			banks = make([]flutterwave.BankItem, 0, len(list))
+			for _, b := range list {
+				banks = append(banks, flutterwave.BankItem{Code: b.Code, Name: b.Name})
+			}
+			source = "live"
+		}
+	}
+	if len(banks) == 0 {
+		banks = NigerianBanksStatic()
+		source = "static"
+	}
+
 	response.Success(w, http.StatusOK, map[string]interface{}{
-		"banks": banks,
+		"banks":  banks,
+		"source": source, // internal/debug only; UI can ignore
 	})
 }
 
-// LookupAccountHandler verifies account name via Flutterwave name enquiry.
+// LookupAccountHandler verifies account name (name enquiry).
+// Preference: Flutterwave resolve → OnePipe lookup_nuban.
 func LookupAccountHandler(w http.ResponseWriter, r *http.Request) {
 	var req BankNameLookupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.Error(w, http.StatusBadRequest, "Invalid payload")
 		return
 	}
-
-	fw := settings.FlutterwaveClient()
-	accountName, err := fw.ResolveBankAccount(req.BankCode, req.AccountNumber)
-	if err != nil {
-		response.Error(w, http.StatusBadRequest, err.Error())
+	req.BankCode = strings.TrimSpace(req.BankCode)
+	req.AccountNumber = strings.TrimSpace(req.AccountNumber)
+	if req.BankCode == "" || len(req.AccountNumber) != 10 {
+		response.Error(w, http.StatusBadRequest, "Select a bank and enter a 10-digit account number")
 		return
 	}
 
-	response.Success(w, http.StatusOK, BankNameLookupResponse{
-		AccountName:   accountName,
-		AccountNumber: req.AccountNumber,
-		BankCode:      req.BankCode,
+	var accountName string
+	var lastErr error
+
+	fw := settings.FlutterwaveClient()
+	if fw.Configured() {
+		if name, err := fw.ResolveBankAccount(req.BankCode, req.AccountNumber); err == nil && strings.TrimSpace(name) != "" {
+			accountName = name
+		} else {
+			lastErr = err
+		}
+	}
+
+	if accountName == "" && settings.OnePipeClient().Configured() {
+		if name, err := settings.OnePipeClient().ResolveBankAccount(req.BankCode, req.AccountNumber); err == nil && strings.TrimSpace(name) != "" {
+			accountName = name
+		} else if lastErr == nil {
+			lastErr = err
+		}
+	}
+
+	if accountName == "" {
+		msg := "Could not verify account name. Check the bank and account number."
+		if lastErr != nil {
+			// Strip vendor names from public error
+			e := strings.ToLower(lastErr.Error())
+			if !strings.Contains(e, "flutterwave") && !strings.Contains(e, "onepipe") && !strings.Contains(e, "configured") {
+				msg = lastErr.Error()
+			}
+		}
+		response.Error(w, http.StatusBadRequest, msg)
+		return
+	}
+
+	// Resolve display bank name from static/live list for UI confirmation
+	bankName := bankNameForCode(req.BankCode)
+
+	response.Success(w, http.StatusOK, map[string]interface{}{
+		"account_name":   accountName,
+		"account_number": req.AccountNumber,
+		"bank_code":      req.BankCode,
+		"bank_name":      bankName,
 	})
+}
+
+func bankNameForCode(code string) string {
+	code = strings.TrimSpace(code)
+	for _, b := range NigerianBanksStatic() {
+		if b.Code == code {
+			return b.Name
+		}
+	}
+	return ""
 }
 
 // CreateBankTransferHandler initiates a bank payout
@@ -126,14 +196,21 @@ func CreateBankTransferHandler(w http.ResponseWriter, r *http.Request) {
 	fee := 50.0 // Flat fee example
 	ref := "TRF-" + time.Now().Format("20060102150405")
 
-	bankName := req.AccountName
-	if bankName == "" {
-		bankName = "Bank (" + req.BankCode + ")"
+	// Prefer resolved beneficiary name; also resolve bank label for receipts/history.
+	beneficiaryName := strings.TrimSpace(req.AccountName)
+	bankLabel := bankNameForCode(req.BankCode)
+	if bankLabel == "" {
+		bankLabel = "Bank"
+	}
+	if beneficiaryName == "" {
+		beneficiaryName = "Account " + maskBankAccount(req.AccountNumber)
 	}
 	accountMasked := maskBankAccount(req.AccountNumber)
+	// History-friendly description: "JOHN DOE · GTBank · 012***6789"
+	historyDesc := beneficiaryName + " · " + bankLabel + " · " + accountMasked
 
 	// Debit first, then live payout. On provider failure: refund + clear error (no silent mock).
-	err := walletPkg.DebitWallet(userID, req.Amount, fee, req.Currency, "bank", ref, req.Description+" to "+req.AccountNumber)
+	err := walletPkg.DebitWallet(userID, req.Amount, fee, req.Currency, "bank", ref, historyDesc)
 	if err != nil {
 		activity.Error("transfer", "debit_failed", err.Error(), activity.UID(userID), ref, r.RemoteAddr)
 		_ = email.SendWithdrawalFailed(pinUser.Email, pinUser.FirstName, ref, err.Error(), req.Amount, req.Currency)
@@ -158,11 +235,14 @@ func CreateBankTransferHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if !payOK || payErr != nil {
 		_ = walletPkg.FundWallet(userID, req.Amount+fee, req.Currency, "refund", ref+"-RFND", "Refund failed bank transfer: "+ref)
-		msg := "Bank transfer provider failed"
+		msg := "Bank transfer could not be completed. Please try again later."
 		if payErr != nil {
-			msg = payErr.Error()
+			e := strings.ToLower(payErr.Error())
+			if !strings.Contains(e, "flutterwave") && !strings.Contains(e, "onepipe") && !strings.Contains(e, "palmpay") && !strings.Contains(e, "configured") && !strings.Contains(e, "key-get") {
+				msg = payErr.Error()
+			}
 		}
-		activity.Error("transfer", "provider_failed", msg, activity.UID(userID), ref, r.RemoteAddr)
+		activity.Error("transfer", "provider_failed", payErrString(payErr), activity.UID(userID), ref, r.RemoteAddr)
 		_ = email.SendWithdrawalFailed(pinUser.Email, pinUser.FirstName, ref, msg, req.Amount, req.Currency)
 		response.Error(w, http.StatusBadGateway, msg)
 		return
@@ -174,11 +254,11 @@ func CreateBankTransferHandler(w http.ResponseWriter, r *http.Request) {
 	activity.Success("transfer", "bank_sent", "Bank transfer "+ref, activity.UID(userID), ref, r.RemoteAddr)
 
 	_ = email.SendWithdrawalInitiated(
-		pinUser.Email, pinUser.FirstName, bankName, accountMasked, ref,
-		"1-3 business days", req.Amount, req.Currency,
+		pinUser.Email, pinUser.FirstName, beneficiaryName+" ("+bankLabel+")", accountMasked, ref,
+		"usually instant", req.Amount, req.Currency,
 	)
 	_ = push.SendToUser(userID, "Transfer sent",
-		fmt.Sprintf("You sent %s %.2f to %s (%s)", req.Currency, req.Amount, accountMasked, ref),
+		fmt.Sprintf("You sent %s %.2f to %s · %s", req.Currency, req.Amount, beneficiaryName, bankLabel),
 		map[string]string{"type": "transfer", "reference": ref},
 	)
 
@@ -192,13 +272,13 @@ func CreateBankTransferHandler(w http.ResponseWriter, r *http.Request) {
 		Status:            "successful",
 		Provider:          payoutProvider,
 		ProviderReference: providerRef,
-		Customer:          req.AccountNumber,
-		Description:       req.Description,
+		Customer:          beneficiaryName + " · " + req.AccountNumber,
+		Description:       historyDesc,
 	}
 	database.DB.Create(&txn)
 
 	_ = email.SendWithdrawalCompleted(
-		pinUser.Email, pinUser.FirstName, bankName, accountMasked, ref,
+		pinUser.Email, pinUser.FirstName, beneficiaryName+" ("+bankLabel+")", accountMasked, ref,
 		req.Amount, req.Currency, time.Now(),
 	)
 
@@ -209,8 +289,17 @@ func CreateBankTransferHandler(w http.ResponseWriter, r *http.Request) {
 		"fee":          fee,
 		"status":       "successful",
 		"account":      req.AccountNumber,
-		"account_name": req.AccountName,
+		"account_name": beneficiaryName,
+		"bank_name":    bankLabel,
+		"bank_code":    req.BankCode,
 	})
+}
+
+func payErrString(err error) string {
+	if err == nil {
+		return "provider failed"
+	}
+	return err.Error()
 }
 
 // BulkTransferHandler processes multiple bank payouts in one request

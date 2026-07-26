@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"flowwithlit/internal/integration/onepipe"
 	"flowwithlit/internal/integration/smileid"
 	"flowwithlit/internal/settings"
 )
@@ -16,6 +17,11 @@ type IdentityPayload struct {
 	PrimaryIDVal  string `json:"primary_id_val"`
 	SecondaryID   string `json:"secondary_id"`
 	UserID        string `json:"user_id"` // optional — for Smile ID partner_params
+	FirstName     string `json:"first_name"`
+	LastName      string `json:"last_name"`
+	Email         string `json:"email"`
+	Phone         string `json:"phone"`
+	DOB           string `json:"date_of_birth"`
 }
 
 // KYCProvider defines the contract for any identity verification engine
@@ -123,4 +129,65 @@ func (f *FlutterwaveProvider) VerifyIdentity(payload IdentityPayload) (string, e
 
 	// For international users or other ID types, default to manual review
 	return "pending", nil
+}
+
+// ----------------------------------------------------------------------------
+// ONEPIPE (server-side BVN / NIN only — never exposed to browser)
+// ----------------------------------------------------------------------------
+
+type OnePipeProvider struct{}
+
+func (o *OnePipeProvider) Name() string { return "internal" } // never surface vendor name to clients
+
+func (o *OnePipeProvider) VerifyIdentity(payload IdentityPayload) (string, error) {
+	country := strings.ToUpper(strings.TrimSpace(payload.CountryCode))
+	if country != "" && country != "NG" {
+		return "pending", nil
+	}
+
+	client := settings.OnePipeClient()
+	if !client.Configured() {
+		// No keys: manual review instead of hard fail
+		return "pending", nil
+	}
+
+	cust := onepipe.Customer{
+		Ref:       payload.UserID,
+		FirstName: payload.FirstName,
+		LastName:  payload.LastName,
+		Email:     payload.Email,
+		Phone:     payload.Phone,
+		DOB:       payload.DOB,
+	}
+
+	idType := strings.ToUpper(strings.TrimSpace(payload.PrimaryIDType))
+	switch idType {
+	case "BVN":
+		res, err := client.LookupBVN(payload.PrimaryIDVal, cust)
+		if err != nil {
+			// Fall back to manual review rather than blocking signup on provider OTP quirks
+			if strings.Contains(strings.ToLower(err.Error()), "otp") {
+				return "pending", nil
+			}
+			return "failed", err
+		}
+		if res != nil && res.OK {
+			return "approved", nil
+		}
+		return "failed", errors.New("BVN verification failed")
+	case "NIN":
+		res, err := client.LookupNIN(payload.PrimaryIDVal, cust)
+		if err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "otp") {
+				return "pending", nil
+			}
+			return "failed", err
+		}
+		if res != nil && res.OK {
+			return "approved", nil
+		}
+		return "failed", errors.New("NIN verification failed")
+	default:
+		return "pending", nil
+	}
 }

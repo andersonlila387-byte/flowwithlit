@@ -151,8 +151,13 @@ func ApproveKYCHandler(w http.ResponseWriter, r *http.Request) {
 	// Every KYC-approved user gets a default deposit account (own name) and a
 	// default USDT receiving address the moment they're approved — not lazily
 	// created on first page visit.
-	if _, err := wallet.EnsureDefaultDepositAccount(user.ID); err != nil {
+	// Prefer re-provision so users stuck on old mock VAs get a live account after keys are configured.
+	if _, err := wallet.ReprovisionDefaultDepositAccount(user.ID); err != nil {
 		log.Printf("KYC approval: could not create default deposit account for user %d: %v", user.ID, err)
+		// Fall back to ensure (idempotent) if reprovision failed mid-way
+		if _, err2 := wallet.EnsureDefaultDepositAccount(user.ID); err2 != nil {
+			log.Printf("KYC approval: ensure deposit also failed user %d: %v", user.ID, err2)
+		}
 	}
 	if _, err := wallet.EnsureDefaultCryptoAddress(user.ID); err != nil {
 		log.Printf("KYC approval: could not create default crypto address for user %d: %v", user.ID, err)

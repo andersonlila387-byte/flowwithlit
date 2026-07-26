@@ -230,29 +230,33 @@ func GetDepositDetailsHandler(w http.ResponseWriter, r *http.Request) {
 
 	account, err := EnsureDefaultDepositAccount(userID)
 	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "Could not prepare your deposit account: "+err.Error())
-		return
-	}
-	cryptoAddr, err := EnsureDefaultCryptoAddress(userID)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "Could not prepare your crypto address: "+err.Error())
+		response.Error(w, http.StatusInternalServerError, publicDepositErr(err))
 		return
 	}
 
-	response.Success(w, http.StatusOK, map[string]interface{}{
+	out := map[string]interface{}{
 		"fiat": map[string]interface{}{
-			"currency":         account.Currency,
-			"account_number":   account.AccountNumber,
-			"bank_name":        account.BankName,
-			"account_name":     account.AccountName,
-			"payment_provider": account.Provider,
-			"instructions":     "Send " + account.Currency + " to this account. Funds credit in seconds.",
+			"currency":       account.Currency,
+			"account_number": account.AccountNumber,
+			"bank_name":      account.BankName,
+			"account_name":   account.AccountName,
+			// Never expose payment-rail vendor names to mobile/web clients
+			"instructions": "Send " + account.Currency + " to this account. Funds credit when the transfer is received.",
 		},
-		"crypto": map[string]interface{}{
+	}
+
+	// Crypto is optional — do not fail NGN deposit details if Circle is not wired yet.
+	if cryptoAddr, err := EnsureDefaultCryptoAddress(userID); err == nil && cryptoAddr != nil {
+		out["crypto"] = map[string]interface{}{
 			"currency":     cryptoAddr.Asset,
 			"network":      cryptoAddr.Network,
 			"address":      cryptoAddr.Address,
 			"instructions": "Send only " + cryptoAddr.Asset + " (" + cryptoAddr.Network + "). Other tokens will be lost.",
-		},
-	})
+		}
+	} else {
+		out["crypto"] = nil
+		out["crypto_available"] = false
+	}
+
+	response.Success(w, http.StatusOK, out)
 }

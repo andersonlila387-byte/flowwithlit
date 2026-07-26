@@ -52,6 +52,34 @@ func EnsureDefaultDepositAccount(userID uint) (*models.DepositAccount, error) {
 	return createDepositAccount(user, currency, countryCode, true)
 }
 
+// ReprovisionDefaultDepositAccount deletes the current default fiat deposit account
+// and creates a fresh one via the live bank rail. Use after keys/config change so
+// users are not stuck with old mock numbers.
+func ReprovisionDefaultDepositAccount(userID uint) (*models.DepositAccount, error) {
+	var user models.User
+	if err := database.DB.First(&user, userID).Error; err != nil {
+		return nil, err
+	}
+
+	currency := strings.ToUpper(strings.TrimSpace(user.DefaultFiatCurrency))
+	countryCode := ""
+	var profile models.BusinessProfile
+	if err := database.DB.Where("user_id = ?", userID).First(&profile).Error; err == nil {
+		if profile.BaseCurrency != "" {
+			currency = strings.ToUpper(profile.BaseCurrency)
+		}
+		countryCode = profile.CountryCode
+	}
+	if currency == "" {
+		currency = "NGN"
+	}
+
+	// Remove existing row for this currency so createDepositAccount hits the live rail.
+	database.DB.Where("user_id = ? AND currency = ?", userID, currency).Delete(&models.DepositAccount{})
+
+	return createDepositAccount(user, currency, countryCode, true)
+}
+
 func createDepositAccount(user models.User, currency, countryCode string, isDefault bool) (*models.DepositAccount, error) {
 	// Idempotent: a currency the user already has just gets returned, never duplicated.
 	var existing models.DepositAccount
@@ -59,14 +87,38 @@ func createDepositAccount(user models.User, currency, countryCode string, isDefa
 		return &existing, nil
 	}
 
-	rail, err := bankrails.Resolve(currency, user.FirstName, user.LastName, user.Email, user.Phone)
+	opts := bankrails.CustomerOpts{
+		UserID:  fmt.Sprintf("%d", user.ID),
+		Address: "",
+	}
+	var profile models.BusinessProfile
+	if err := database.DB.Where("user_id = ?", user.ID).First(&profile).Error; err == nil {
+		opts.Address = profile.Address
+		if countryCode == "" {
+			countryCode = profile.CountryCode
+		}
+	}
+	if user.DateOfBirth != nil {
+		opts.DOB = user.DateOfBirth.Format("2006-01-02")
+	}
+
+	rail, err := bankrails.ResolveWithOpts(currency, user.FirstName, user.LastName, user.Email, user.Phone, opts)
 	if err != nil {
 		return nil, err
 	}
-	// Persist the actual rail (onepipe | palmpay | flutterwave). Default remains onepipe for NGN.
+	// Persist the actual rail for internal settlement routing only (never show to end users).
 	providerName := rail.Provider
 	if providerName == "" {
-		providerName = "flutterwave"
+		providerName = "internal"
+	}
+
+	accountName := strings.TrimSpace(user.FirstName + " " + user.LastName)
+	// Prefer registered business name only when it looks like a real business (not personal KYC placeholder).
+	if bn := strings.TrimSpace(profile.BusinessName); bn != "" &&
+		!strings.EqualFold(bn, "Personal Account") &&
+		!strings.EqualFold(bn, accountName) &&
+		strings.EqualFold(currency, "NGN") {
+		accountName = bn
 	}
 
 	account := models.DepositAccount{
@@ -75,7 +127,7 @@ func createDepositAccount(user models.User, currency, countryCode string, isDefa
 		CountryCode:   countryCode,
 		AccountNumber: rail.AccountNumber,
 		BankName:      rail.BankName,
-		AccountName:   strings.TrimSpace(user.FirstName + " " + user.LastName),
+		AccountName:   accountName,
 		Provider:      providerName,
 		IsDefault:     isDefault,
 	}
@@ -95,15 +147,30 @@ func GetDepositAccountsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := EnsureDefaultDepositAccount(userID); err != nil {
-		response.Error(w, http.StatusInternalServerError, "Could not prepare your deposit account: "+err.Error())
+		response.Error(w, http.StatusInternalServerError, publicDepositErr(err))
 		return
 	}
 
 	var accounts []models.DepositAccount
 	database.DB.Where("user_id = ?", userID).Order("is_default desc, created_at asc").Find(&accounts)
 
+	// Never expose payment-rail vendor names to the browser / mobile app.
+	public := make([]map[string]interface{}, 0, len(accounts))
+	for _, a := range accounts {
+		public = append(public, map[string]interface{}{
+			"id":             a.ID,
+			"currency":       a.Currency,
+			"country_code":   a.CountryCode,
+			"account_number": a.AccountNumber,
+			"bank_name":      a.BankName,
+			"account_name":   a.AccountName,
+			"is_default":     a.IsDefault,
+			"created_at":     a.CreatedAt,
+		})
+	}
+
 	response.Success(w, http.StatusOK, map[string]interface{}{
-		"accounts":    accounts,
+		"accounts":    public,
 		"max_allowed": maxDepositAccountsPerUser,
 	})
 }
@@ -141,7 +208,10 @@ func CreateDepositAccountHandler(w http.ResponseWriter, r *http.Request) {
 
 	var existing models.DepositAccount
 	if err := database.DB.Where("user_id = ? AND currency = ?", userID, currency).First(&existing).Error; err == nil {
-		response.Success(w, http.StatusOK, map[string]interface{}{"account": existing, "message": "You already have a deposit account in this currency."})
+		response.Success(w, http.StatusOK, map[string]interface{}{
+			"account": publicDepositAccount(existing),
+			"message": "You already have a deposit account in this currency.",
+		})
 		return
 	}
 
@@ -160,11 +230,41 @@ func CreateDepositAccountHandler(w http.ResponseWriter, r *http.Request) {
 
 	account, err := createDepositAccount(user, currency, "", false)
 	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "Could not generate account: "+err.Error())
+		response.Error(w, http.StatusInternalServerError, publicDepositErr(err))
 		return
 	}
 
-	response.Success(w, http.StatusCreated, map[string]interface{}{"account": account, "message": "Deposit account created."})
+	response.Success(w, http.StatusCreated, map[string]interface{}{
+		"account": publicDepositAccount(*account),
+		"message": "Deposit account created.",
+	})
+}
+
+func publicDepositAccount(a models.DepositAccount) map[string]interface{} {
+	return map[string]interface{}{
+		"id":             a.ID,
+		"currency":       a.Currency,
+		"country_code":   a.CountryCode,
+		"account_number": a.AccountNumber,
+		"bank_name":      a.BankName,
+		"account_name":   a.AccountName,
+		"is_default":     a.IsDefault,
+		"created_at":     a.CreatedAt,
+	}
+}
+
+func publicDepositErr(err error) string {
+	if err == nil {
+		return "Could not prepare your deposit account"
+	}
+	msg := err.Error()
+	lower := strings.ToLower(msg)
+	for _, v := range []string{"onepipe", "flutterwave", "palmpay", "circle", "not configured", "key-get"} {
+		if strings.Contains(lower, v) {
+			return "Could not prepare your deposit account right now. Please try again later or contact support."
+		}
+	}
+	return "Could not prepare your deposit account: " + msg
 }
 
 // ── Crypto deposit addresses ───────────────────────────────────────────────────
@@ -215,8 +315,8 @@ func ensureCryptoAddress(userID uint, asset string) (*models.CryptoDepositAddres
 	return &addr, nil
 }
 
-// GetCryptoAddressesHandler lists the user's persisted crypto receiving addresses
-// (lazy-creating the default USDT one if none exist yet).
+// GetCryptoAddressesHandler lists the user's persisted crypto receiving addresses.
+// If Circle is not configured, returns empty addresses with available=false (no hard error).
 func GetCryptoAddressesHandler(w http.ResponseWriter, r *http.Request) {
 	userID, ok := r.Context().Value(middleware.UserIDKey).(uint)
 	if !ok {
@@ -224,19 +324,69 @@ func GetCryptoAddressesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := EnsureDefaultCryptoAddress(userID); err != nil {
-		response.Error(w, http.StatusInternalServerError, "Could not prepare your crypto address: "+err.Error())
+	circleOK := settings.CircleClient().Configured()
+	var addresses []models.CryptoDepositAddress
+	database.DB.Where("user_id = ?", userID).Order("created_at asc").Find(&addresses)
+	if addresses == nil {
+		addresses = []models.CryptoDepositAddress{}
+	}
+
+	if !circleOK {
+		response.Success(w, http.StatusOK, map[string]interface{}{
+			"addresses":        addresses,
+			"available":        false,
+			"configured":       false,
+			"settlement_asset": "USDT",
+			"message":          "Crypto deposits are not available yet. Platform crypto rail is not configured.",
+			"note":             "Ask support or wait until crypto is enabled in platform settings.",
+		})
 		return
 	}
 
-	var addresses []models.CryptoDepositAddress
-	database.DB.Where("user_id = ?", userID).Order("created_at asc").Find(&addresses)
+	// Try to ensure default USDT address when keys exist (may still fail if Circle API incomplete)
+	genErr := ""
+	if len(addresses) == 0 {
+		if _, err := EnsureDefaultCryptoAddress(userID); err != nil {
+			genErr = publicCryptoErr(err)
+		} else {
+			database.DB.Where("user_id = ?", userID).Order("created_at asc").Find(&addresses)
+			if addresses == nil {
+				addresses = []models.CryptoDepositAddress{}
+			}
+		}
+	}
+
+	available := len(addresses) > 0
+	msg := ""
+	if !available {
+		msg = genErr
+		if msg == "" {
+			msg = "Crypto addresses could not be prepared right now. Try again later."
+		}
+	}
 
 	response.Success(w, http.StatusOK, map[string]interface{}{
 		"addresses":        addresses,
+		"available":        available,
+		"configured":       true,
 		"settlement_asset": "USDT",
+		"message":          msg,
 		"note":             "Funds received on any address other than USDT are converted to USDT on arrival. You can still withdraw as the original asset.",
 	})
+}
+
+func publicCryptoErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	lower := strings.ToLower(msg)
+	for _, v := range []string{"circle", "not configured", "key-get"} {
+		if strings.Contains(lower, v) {
+			return "Crypto deposits are not ready yet. The platform is still connecting the crypto rail."
+		}
+	}
+	return "Could not prepare your crypto address right now. Please try again later."
 }
 
 type createCryptoAddressRequest struct {
@@ -270,9 +420,14 @@ func CreateCryptoAddressHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !settings.CircleClient().Configured() {
+		response.Error(w, http.StatusServiceUnavailable, "Crypto is not available yet. Platform crypto rail is not configured.")
+		return
+	}
+
 	address, err := ensureCryptoAddress(userID, asset)
 	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "Could not generate address: "+err.Error())
+		response.Error(w, http.StatusServiceUnavailable, publicCryptoErr(err))
 		return
 	}
 

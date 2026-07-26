@@ -19,7 +19,14 @@ func GetActivityHandler(w http.ResponseWriter, r *http.Request) {
 	if page < 1 {
 		page = 1
 	}
-	limit := 50
+	// Terminal / copy-all can request up to 500 lines
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit < 1 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
 	offset := (page - 1) * limit
 
 	area := strings.TrimSpace(r.URL.Query().Get("area"))
@@ -35,7 +42,7 @@ func GetActivityHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if q != "" {
 		like := "%" + q + "%"
-		db = db.Where("message LIKE ? OR event LIKE ? OR reference LIKE ?", like, like, like)
+		db = db.Where("message LIKE ? OR event LIKE ? OR reference LIKE ? OR meta LIKE ?", like, like, like, like)
 	}
 
 	var total int64
@@ -92,7 +99,7 @@ func GetActivityHandler(w http.ResponseWriter, r *http.Request) {
 		"recent_failed_transactions": failedTx,
 		"areas": []string{
 			"auth", "transfer", "bill", "webhook", "wallet", "biometric",
-			"push", "kyc", "checkout", "card", "system",
+			"push", "kyc", "checkout", "card", "family", "system",
 		},
 		"meta": PaginationMeta{
 			CurrentPage: page,
