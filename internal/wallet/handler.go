@@ -3,7 +3,9 @@ package wallet
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"flowwithlit/internal/database"
@@ -109,9 +111,20 @@ func SwapHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rate := getSwapRate(req.FromCurrency, req.ToCurrency)
+	fromCur := strings.ToUpper(strings.TrimSpace(req.FromCurrency))
+	toCur := strings.ToUpper(strings.TrimSpace(req.ToCurrency))
+	req.FromCurrency = fromCur
+	req.ToCurrency = toCur
+
+	rate := getSwapRate(fromCur, toCur)
 	if rate <= 0 {
-		response.Error(w, http.StatusBadRequest, "Unsupported currency pair")
+		response.Error(w, http.StatusBadRequest, "Rate not available for "+fromCur+" → "+toCur+". Configure exchange rates in Admin.")
+		return
+	}
+	// Guard against accidental 1:1 NGN↔USDT (misconfigured board)
+	if ((fromCur == "NGN" && (toCur == "USDT" || toCur == "USD")) ||
+		((fromCur == "USDT" || fromCur == "USD") && toCur == "NGN")) && rate > 0.5 && rate < 2 {
+		response.Error(w, http.StatusBadRequest, "Swap rate looks invalid. Update USD/NGN in Admin → Currency rates.")
 		return
 	}
 
@@ -205,19 +218,37 @@ func getSwapRate(from, to string) float64 {
 }
 
 // GetRatesHandler for frontend swap calculator
+// rate = units of TO per 1 unit of FROM (multiply amount by rate).
+// Never falls back to 1.0 for different currencies (that caused 1 NGN = 1 USDT).
 func GetRatesHandler(w http.ResponseWriter, r *http.Request) {
-	from := r.URL.Query().Get("from")
-	to := r.URL.Query().Get("to")
+	from := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("from")))
+	to := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("to")))
+
+	if from == "" || to == "" {
+		response.Error(w, http.StatusBadRequest, "from and to currencies are required")
+		return
+	}
 
 	rate := getSwapRate(from, to)
-	if rate == 0 {
-		rate = 1.0 // fallback
+	if from == to {
+		rate = 1
+	}
+	if from != to && rate <= 0 {
+		response.Error(w, http.StatusServiceUnavailable, "Rate not available for "+from+" → "+to+". Set pairs in Admin → Currency rates.")
+		return
+	}
+
+	inverse := 0.0
+	if rate > 0 {
+		inverse = 1.0 / rate
 	}
 
 	response.Success(w, http.StatusOK, map[string]interface{}{
-		"from": from,
-		"to":   to,
-		"rate": rate,
+		"from":    from,
+		"to":      to,
+		"rate":    rate,
+		"inverse": inverse,
+		"quote":   fmt.Sprintf("1 %s = %g %s", from, rate, to),
 	})
 }
 
