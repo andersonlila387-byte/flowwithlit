@@ -1,6 +1,7 @@
 package user
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -131,6 +132,79 @@ func MobileHomeHandler(w http.ResponseWriter, r *http.Request) {
 	user.Password = ""
 	user.TransactionPin = ""
 
+	// Onboarding / tracking for a faster mobile experience (progress ring + next step)
+	deviceID := strings.TrimSpace(r.Header.Get("X-Device-Id"))
+	bioEnrolled := false
+	if deviceID != "" {
+		var cred models.BiometricCredential
+		if err := database.DB.Where("user_id = ? AND device_id = ?", user.ID, deviceID).First(&cred).Error; err == nil {
+			bioEnrolled = true
+		}
+	}
+	hasDeposit := deposit != nil && strings.TrimSpace(fmt.Sprint(deposit["account_number"])) != ""
+	kycOk := user.KYCLevel >= 1 || strings.EqualFold(kycStatus, "approved") || strings.EqualFold(kycStatus, "verified")
+
+	type trackStep struct {
+		ID       string `json:"id"`
+		Label    string `json:"label"`
+		Done     bool   `json:"done"`
+		Optional bool   `json:"optional,omitempty"`
+		Route    string `json:"route,omitempty"` // app deep-link hint
+	}
+	steps := []trackStep{
+		{ID: "email", Label: "Verify email", Done: user.IsEmailVerified, Route: "verify_email"},
+		{ID: "phone", Label: "Verify phone", Done: user.IsPhoneVerified, Route: "verify_phone"},
+		{ID: "pin", Label: "Set transaction PIN", Done: hasPIN, Route: "settings_pin"},
+		{ID: "kyc", Label: "Complete identity KYC", Done: kycOk, Route: "kyc"},
+		{ID: "deposit", Label: "Get deposit account", Done: hasDeposit, Route: "add_funds"},
+		{ID: "biometric", Label: "Enable fingerprint", Done: bioEnrolled, Optional: true, Route: "settings_biometric"},
+	}
+	requiredDone, requiredTotal := 0, 0
+	var next *trackStep
+	for i := range steps {
+		if steps[i].Optional {
+			continue
+		}
+		requiredTotal++
+		if steps[i].Done {
+			requiredDone++
+		} else if next == nil {
+			cp := steps[i]
+			next = &cp
+		}
+	}
+	percent := 0
+	if requiredTotal > 0 {
+		percent = (requiredDone * 100) / requiredTotal
+	}
+	nextAction := "You're all set"
+	nextID := ""
+	if next != nil {
+		nextAction = next.Label
+		nextID = next.ID
+	}
+
+	// Lightweight recent activity for home feed (faster than full transactions page)
+	var recent []models.Transaction
+	database.DB.Where("user_id = ?", userID).Order("created_at desc").Limit(8).Find(&recent)
+	if recent == nil {
+		recent = []models.Transaction{}
+	}
+	// Strip heavy fields for mobile payload
+	activity := make([]map[string]interface{}, 0, len(recent))
+	for _, t := range recent {
+		activity = append(activity, map[string]interface{}{
+			"id":          t.ID,
+			"reference":   t.Reference,
+			"amount":      t.Amount,
+			"currency":    t.Currency,
+			"type":        t.Type,
+			"status":      t.Status,
+			"description": t.Description,
+			"created_at":  t.CreatedAt,
+		})
+	}
+
 	response.Success(w, http.StatusOK, map[string]interface{}{
 		"user": map[string]interface{}{
 			"id":                user.ID,
@@ -145,6 +219,7 @@ func MobileHomeHandler(w http.ResponseWriter, r *http.Request) {
 			"is_phone_verified": user.IsPhoneVerified,
 			"default_fiat":      user.DefaultFiatCurrency,
 			"default_crypto":    user.DefaultCryptoCurrency,
+			"profile_image":     user.ProfileImage,
 		},
 		"has_transaction_pin": hasPIN,
 		"balances":            balances,
@@ -154,6 +229,25 @@ func MobileHomeHandler(w http.ResponseWriter, r *http.Request) {
 		"deposit_account":     deposit,
 		// Same PIN as web Settings → Transaction PIN; same wallets as web dashboard
 		"pin_note": "The 4-digit transaction PIN set on web is used for mobile transfers and payments.",
+		// Progress tracking for cool, fast mobile onboarding UX
+		"tracking": map[string]interface{}{
+			"percent":     percent,
+			"done":        requiredDone,
+			"total":       requiredTotal,
+			"complete":    requiredDone >= requiredTotal,
+			"next_step":   nextID,
+			"next_action": nextAction,
+			"steps":       steps,
+		},
+		"recent_activity": activity,
+		"quick_actions": []map[string]string{
+			{"id": "transfer", "label": "Transfer", "route": "transfers"},
+			{"id": "fund", "label": "Add money", "route": "add_funds"},
+			{"id": "bills", "label": "Airtime", "route": "bills"},
+			{"id": "swap", "label": "Swap", "route": "swap"},
+			{"id": "family", "label": "Family", "route": "family"},
+			{"id": "vaults", "label": "Vaults", "route": "vaults"},
+		},
 	})
 }
 

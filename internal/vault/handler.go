@@ -22,11 +22,11 @@ func GetVaultsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var vaults []models.Vault
+	vaults := make([]models.Vault, 0)
 	database.DB.Where("user_id = ?", userID).Order("created_at desc").Find(&vaults)
 
 	response.Success(w, http.StatusOK, map[string]interface{}{
-		"vaults": vaults,
+		"vaults": vaults, // always [] when empty — never null / demo
 	})
 }
 
