@@ -2,6 +2,7 @@ package auth
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"time"
 
@@ -94,7 +95,11 @@ func ResendVerificationHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = email.SendEmailVerificationOTP(user.Email, user.FirstName, otp)
+	if err := email.SendEmailVerificationOTP(user.Email, user.FirstName, otp); err != nil {
+		log.Printf("⚠️ resend-verification email failed for %s: %v", user.Email, err)
+		response.Error(w, http.StatusInternalServerError, "Failed to send verification email. Please try again shortly.")
+		return
+	}
 
 	response.Success(w, http.StatusOK, map[string]string{"message": "A new verification code has been sent."})
 }
