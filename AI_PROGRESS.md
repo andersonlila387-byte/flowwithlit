@@ -251,6 +251,7 @@ Admin setting keys:
 | 2026-07-26 | **Transfers honesty UX:** No fake crypto balance/success; crypto marked Soon; real NGN balance; success only on API ok; fancy in-modal error step; create_bank_transfer normalizes status. |
 | 2026-07-26 | **Transaction PIN security:** Fixed `has_transaction_pin` path in auth_init (`data.has_transaction_pin`); SetupPIN bcrypt-only (no password field touch); confirm + current PIN on change; weak PIN block; rate limit; settings UI confirm fields. |
 | 2026-07-26 | **Checkout test vs live:** Test keys → simulated bank VA (`Test Bank`, `000…`), auto bank confirm, no real rails/money. Live keys → real deposit account / open_account + real card charge. Crypto only in test (sim) or hidden live. |
+| 2026-07-26 | **Mobile tracking + vaults:** `GET /user/mobile/home` includes `tracking` (progress ring steps: email/phone/pin/kyc/deposit/biometric), `recent_activity`, `quick_actions`. Vaults list always `[]` when empty (no null/demo). |
 
 ---
 
