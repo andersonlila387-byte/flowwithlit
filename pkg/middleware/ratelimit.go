@@ -1,7 +1,9 @@
 package middleware
 
 import (
+	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -57,9 +59,43 @@ func RateLimit(maxRequests int, window time.Duration) func(http.Handler) http.Ha
 	}
 }
 
-func clientIP(r *http.Request) string {
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		return strings.TrimSpace(strings.Split(fwd, ",")[0])
+// trustedProxyCIDR is the CIDR of the trusted reverse proxy (e.g. Nginx on aaPanel).
+// Set TRUSTED_PROXY env var to your proxy IP/CIDR (e.g. "127.0.0.1/32" or "10.0.0.0/8").
+// When not set, X-Forwarded-For is NEVER trusted — RemoteAddr is used exclusively.
+// This prevents clients from spoofing their IP to bypass rate limits.
+var trustedProxyCIDR = func() *net.IPNet {
+	cidr := strings.TrimSpace(os.Getenv("TRUSTED_PROXY"))
+	if cidr == "" {
+		return nil
 	}
-	return r.RemoteAddr
+	_, network, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return nil
+	}
+	return network
+}()
+
+// clientIP returns the real client IP. Only trusts X-Forwarded-For when the
+// direct connection comes from the configured TRUSTED_PROXY CIDR.
+func clientIP(r *http.Request) string {
+	remoteHost, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		// RemoteAddr without port (shouldn't happen in Go's http.Server, but be safe)
+		remoteHost = r.RemoteAddr
+	}
+
+	if trustedProxyCIDR != nil {
+		remoteIP := net.ParseIP(remoteHost)
+		if remoteIP != nil && trustedProxyCIDR.Contains(remoteIP) {
+			// This request came through our trusted proxy — trust the forwarded header.
+			if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+				// Take only the first (leftmost) IP — that is the real client.
+				return strings.TrimSpace(strings.Split(fwd, ",")[0])
+			}
+		}
+	}
+
+	// Direct connection or untrusted origin — RemoteAddr is ground truth.
+	return remoteHost
 }
+

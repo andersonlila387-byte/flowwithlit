@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"flowwithlit/internal/settings"
 	"flowwithlit/internal/wallet"
 )
+
 
 func logWebhook(provider, eventType, payload, status, errMsg, ip string, processingMs int64) {
 	entry := models.WebhookLog{
@@ -67,12 +69,21 @@ func verifyHMACHex(secret string, body []byte, signature string) bool {
 }
 
 // softVerify returns (ok, enforced).
-// When secret is empty: ok=true, enforced=false (live keeps working; log once per call path).
-// When secret is set: require a valid signature; reject otherwise.
+// Production (ENVIRONMENT=production): requires a configured secret. If secret is
+// empty in production the webhook is REJECTED with enforced=true — an unconfigured
+// secret is a dangerous misconfiguration for any money-moving endpoint.
+// Non-production: ok=true, enforced=false when secret is empty (dev/staging keeps working).
 func softVerify(provider, secret string, body []byte, candidates ...string) (ok bool, enforced bool) {
 	secret = strings.TrimSpace(secret)
 	if secret == "" {
-		log.Printf("[Webhook] %s: webhook secret not configured — accepting payload without signature check (set secret in Admin → Settings to enforce)", provider)
+		isProd := strings.EqualFold(strings.TrimSpace(os.Getenv("ENVIRONMENT")), "production")
+		if isProd {
+			// Hard-block in production: missing secret is a misconfiguration, not a
+			// passthrough. Set the secret in Admin → Settings before going live.
+			log.Printf("[Webhook] SECURITY: %s webhook secret not configured in production — rejecting payload. Configure it in Admin → Settings.", provider)
+			return false, true
+		}
+		log.Printf("[Webhook] %s: webhook secret not configured — accepting payload without signature check (non-production only)", provider)
 		return true, false
 	}
 	enforced = true
@@ -101,7 +112,12 @@ func verifyOnePipeSignature(secret string, body []byte, requestRef string, candi
 		secret = strings.TrimSpace(settings.Get("onepipe_secret"))
 	}
 	if secret == "" {
-		log.Printf("[Webhook] onepipe: no webhook/app secret — accepting without signature check")
+		isProd := strings.EqualFold(strings.TrimSpace(os.Getenv("ENVIRONMENT")), "production")
+		if isProd {
+			log.Printf("[Webhook] SECURITY: onepipe webhook/app secret not configured in production — rejecting deposit. Configure onepipe_webhook_secret in Admin → Settings.")
+			return false, true
+		}
+		log.Printf("[Webhook] onepipe: no webhook/app secret — accepting without signature check (non-production only)")
 		return true, false
 	}
 	enforced = true

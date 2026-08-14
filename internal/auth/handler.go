@@ -83,9 +83,14 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("⚠️ verification email failed for %s: %v", user.Email, err)
 	}
 
+	// Return only safe non-sensitive fields — never return the full user struct
+	// (which includes VerificationOTP, hashed password, and internal fields).
 	response.Success(w, http.StatusCreated, map[string]interface{}{
-		"message": "Registration successful. Please verify your email.",
-		"user":    user,
+		"message":    "Registration successful. Please verify your email.",
+		"user_id":    user.ID,
+		"email":      user.Email,
+		"first_name": user.FirstName,
+		"last_name":  user.LastName,
 	})
 }
 
@@ -121,9 +126,14 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if user.TwoFactorEnabled {
-		// Generate a temporary token for 2FA validation
-		tempToken, _, _ := jwt.GenerateTokens(user.ID, user.Email) // Reuse jwt for temp auth
-		
+		// Issue a short-lived (5 min) purpose-restricted token for the 2FA step only.
+		// A full 24h access token must NOT be issued here — if intercepted before
+		// TOTP verification, it would grant complete account access without 2FA.
+		tempToken, err := jwt.GenerateTempToken(user.ID, "2fa_pending")
+		if err != nil {
+			response.Error(w, http.StatusInternalServerError, "Failed to generate 2FA token")
+			return
+		}
 		response.Success(w, http.StatusOK, map[string]interface{}{
 			"requires_2fa": true,
 			"temp_token":   tempToken,
@@ -149,14 +159,20 @@ func Login2FAHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate Temp Token (which is just an access token for the first step)
-	claims, err := jwt.ValidateToken(req.TempToken)
+	// Validate the temp token and enforce the purpose=2fa_pending claim.
+	// ValidatePurposeToken rejects any real access/refresh token used here.
+	claims, err := jwt.ValidatePurposeToken(req.TempToken, "2fa_pending")
 	if err != nil {
 		response.Error(w, http.StatusUnauthorized, "Invalid or expired temp token")
 		return
 	}
 
-	userID := uint(claims["user_id"].(float64))
+	userIDFloat, ok := claims["user_id"].(float64)
+	if !ok {
+		response.Error(w, http.StatusUnauthorized, "Invalid temp token claims")
+		return
+	}
+	userID := uint(userIDFloat)
 	
 	var user models.User
 	if err := database.DB.First(&user, userID).Error; err != nil {
@@ -167,10 +183,9 @@ func Login2FAHandler(w http.ResponseWriter, r *http.Request) {
 	// Validate the 2FA Code
 	valid := totp.Validate(req.Code, user.TwoFactorSecret)
 	if !valid {
-		ip := r.RemoteAddr
-		if forwardedFor := r.Header.Get("X-Forwarded-For"); forwardedFor != "" {
-			ip = forwardedFor
-		}
+		// Use the same clientIP helper used everywhere else — never take the raw
+		// X-Forwarded-For chain since it contains all proxy hops, not just the client.
+		ip := clientIP(r)
 		_ = email.SendSuspiciousActivity(
 			user.Email, user.FirstName,
 			"Failed two-factor authentication sign-in attempt",

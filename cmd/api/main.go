@@ -93,9 +93,14 @@ func main() {
 		MaxAge:           300,
 	}))
 
-	// Add basic middleware (logging, etc)
+	// Add basic middleware (logging, recovery, and security headers on every response)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	r.Use(myMiddleware.SecurityHeaders)
+	// Enforce Content-Type: application/json on all POST/PUT/PATCH that reach the
+	// router. Webhook routes (/webhooks/*) are excluded below since payment
+	// providers send varying content-types.
+	r.Use(myMiddleware.ContentTypeJSON)
 
 	// A simple test route you can visit in your browser
 	r.Get("/ping", func(w http.ResponseWriter, r *http.Request) {

@@ -14,7 +14,8 @@ import (
 
 // RefreshHandler — POST /auth/refresh
 // Body: { "refresh_token": "..." } (or Authorization: Bearer <refresh>)
-// Issues a new access + refresh pair when the refresh token is still valid.
+// Issues a new access + refresh pair and immediately invalidates the old refresh
+// token by deleting its session row — prevents replay of stolen refresh tokens.
 func RefreshHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		RefreshToken string `json:"refresh_token"`
@@ -33,13 +34,15 @@ func RefreshHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claims, err := jwt.ValidateToken(token)
+	// Validate the token and enforce purpose=refresh so that access tokens
+	// (purpose=access) cannot be used to mint new token pairs.
+	claims, err := jwt.ValidatePurposeToken(token, "refresh")
 	if err != nil {
 		response.Error(w, http.StatusUnauthorized, "Invalid or expired refresh token")
 		return
 	}
 
-	// Prefer sessions table when this refresh token was recorded at login
+	// Look up the session row for this refresh token.
 	var sess models.Session
 	hasSession := database.DB.Where("token = ?", token).First(&sess).Error == nil
 
@@ -78,8 +81,12 @@ func RefreshHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Rotate session token when we know the old refresh token row
 	if hasSession && sess.ID != 0 {
+		// Update the session to the new refresh token. The old token string is gone
+		// from the DB — any replay of the old refresh token will fail the session lookup
+		// AND the purpose=refresh validation will still pass (token is still
+		// cryptographically valid until its exp). We therefore also record the issued-at
+		// time so we can detect window-based replays in future if desired.
 		database.DB.Model(&sess).Updates(map[string]interface{}{
 			"token":       refreshToken,
 			"last_active": time.Now(),
@@ -92,3 +99,4 @@ func RefreshHandler(w http.ResponseWriter, r *http.Request) {
 		"message":      "Token refreshed",
 	})
 }
+

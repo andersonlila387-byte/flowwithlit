@@ -130,11 +130,14 @@ func SwapHandler(w http.ResponseWriter, r *http.Request) {
 
 	toAmount := req.Amount * rate
 
-	// Use a proper GORM transaction
+	// Use a proper GORM transaction with pessimistic row locks to prevent
+	// concurrent swap requests from double-spending the same wallet balance.
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
-		// Debit from source wallet
+		// Lock the source wallet row before reading balance — prevents TOCTOU race.
 		var fromWallet models.Wallet
-		if err := tx.Where("user_id = ? AND currency = ?", userID, req.FromCurrency).First(&fromWallet).Error; err != nil {
+		if err := tx.Set("gorm:query_option", "FOR UPDATE").
+			Where("user_id = ? AND currency = ?", userID, req.FromCurrency).
+			First(&fromWallet).Error; err != nil {
 			return errors.New("source wallet not found")
 		}
 		if fromWallet.Balance < req.Amount {
@@ -146,9 +149,11 @@ func SwapHandler(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 
-		// Credit / create destination wallet
+		// Lock or create destination wallet row.
 		var toWallet models.Wallet
-		if err := tx.Where("user_id = ? AND currency = ?", userID, req.ToCurrency).First(&toWallet).Error; err != nil {
+		if err := tx.Set("gorm:query_option", "FOR UPDATE").
+			Where("user_id = ? AND currency = ?", userID, req.ToCurrency).
+			First(&toWallet).Error; err != nil {
 			toWallet = models.Wallet{
 				UserID:   userID,
 				Currency: req.ToCurrency,
@@ -163,9 +168,10 @@ func SwapHandler(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 
-		// Record ledger entries
+		// Use nanosecond timestamp for uniqueness — second-precision collides
+		// if two swaps are initiated within the same second.
 		now := time.Now()
-		ref := "SWAP-" + now.Format("20060102150405")
+		ref := fmt.Sprintf("SWAP-%d", now.UnixNano())
 
 		if err := tx.Create(&models.Transaction{
 			UserID:       userID,

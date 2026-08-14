@@ -10,8 +10,11 @@
 *.dylib
 /api.exe
 /cmd/api/api.exe
+# Temp build artifacts — never commit these large binaries
+tmp_*.exe
 /bin/
 /dist/
+
 
 # Go
 /vendor/
