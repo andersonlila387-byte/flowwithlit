@@ -18,7 +18,7 @@ func GeneratePaymentToken(userID uint, deviceID string) (string, int, error) {
 		"iat":       time.Now().Unix(),
 	}
 	token := jwtlib.NewWithClaims(jwtlib.SigningMethodHS256, claims)
-	signed, err := token.SignedString(secretKey)
+	signed, err := token.SignedString(getSecretKey())
 	if err != nil {
 		return "", 0, err
 	}
