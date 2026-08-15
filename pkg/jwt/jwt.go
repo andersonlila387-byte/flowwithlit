@@ -5,28 +5,39 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// secretKey signs all user auth tokens. Loaded once at startup.
-// REQUIRED in production — the app will panic rather than fall back to a
-// weak dev secret that anyone with the source code could exploit to forge tokens.
-var secretKey = func() []byte {
-	s := strings.TrimSpace(os.Getenv("JWT_SECRET"))
-	if s == "" {
-		isProd := strings.EqualFold(strings.TrimSpace(os.Getenv("ENVIRONMENT")), "production")
-		if isProd {
-			// Fail fast — a missing secret in production is a critical misconfiguration.
-			panic("FATAL: JWT_SECRET environment variable is not set. " +
-				"Set it to a long random string before starting the server in production.")
+// secretKey is lazy-loaded on first use via getSecretKey().
+// This ensures godotenv.Load() in main() runs first before we read JWT_SECRET.
+// A package-level var initializer would run BEFORE main() — meaning the .env
+// file would not yet be loaded and os.Getenv("JWT_SECRET") would always be empty.
+var (
+	secretKeyOnce sync.Once
+	secretKeyVal  []byte
+)
+
+// getSecretKey returns the JWT signing secret, loading it from env on first call.
+func getSecretKey() []byte {
+	secretKeyOnce.Do(func() {
+		s := strings.TrimSpace(os.Getenv("JWT_SECRET"))
+		if s == "" {
+			isProd := strings.EqualFold(strings.TrimSpace(os.Getenv("ENVIRONMENT")), "production")
+			if isProd {
+				panic("FATAL: JWT_SECRET environment variable is not set. " +
+					"Set it to a long random string before starting the server in production.")
+			}
+			fmt.Println("WARNING: JWT_SECRET not set — using insecure dev fallback. NEVER run this in production.")
+			secretKeyVal = []byte("super-secret-flowwithlit-dev-only")
+			return
 		}
-		fmt.Println("WARNING: JWT_SECRET not set — using insecure dev fallback. NEVER run this in production.")
-		return []byte("super-secret-flowwithlit-dev-only")
-	}
-	return []byte(s)
-}()
+		secretKeyVal = []byte(s)
+	})
+	return secretKeyVal
+}
 
 // GenerateTokens creates both an access token (24h) and a refresh token (7 days).
 func GenerateTokens(userID uint, email string) (string, string, error) {
@@ -39,7 +50,7 @@ func GenerateTokens(userID uint, email string) (string, string, error) {
 		"iat":     time.Now().Unix(),
 	}
 	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
-	signedAccessToken, err := accessToken.SignedString(secretKey)
+	signedAccessToken, err := accessToken.SignedString(getSecretKey())
 	if err != nil {
 		return "", "", err
 	}
@@ -52,7 +63,7 @@ func GenerateTokens(userID uint, email string) (string, string, error) {
 		"iat":     time.Now().Unix(),
 	}
 	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
-	signedRefreshToken, err := refreshToken.SignedString(secretKey)
+	signedRefreshToken, err := refreshToken.SignedString(getSecretKey())
 	if err != nil {
 		return "", "", err
 	}
@@ -71,7 +82,7 @@ func GenerateTempToken(userID uint, purpose string) (string, error) {
 		"iat":     time.Now().Unix(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(secretKey)
+	return token.SignedString(getSecretKey())
 }
 
 // ValidateToken parses and verifies a JWT string, returning the claims if valid.
@@ -81,7 +92,7 @@ func ValidateToken(tokenString string) (jwt.MapClaims, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, errors.New("unexpected signing method")
 		}
-		return secretKey, nil
+		return getSecretKey(), nil
 	})
 	if err != nil {
 		return nil, err
